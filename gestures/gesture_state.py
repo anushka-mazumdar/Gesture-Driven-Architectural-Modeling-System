@@ -13,28 +13,24 @@ class GestureStateMachine:
 
     def update(self, gesture):
 
-        # IDLE → SKETCH MODE
         if self.state == GestureState.IDLE:
 
             if gesture == "OPEN PALM":
                 self.state = GestureState.SKETCH_MODE
 
 
-        # SKETCH MODE → DRAWING
         elif self.state == GestureState.SKETCH_MODE:
 
             if gesture == "PINCH":
                 self.state = GestureState.DRAWING
 
 
-        # DRAWING → SKETCH MODE
         elif self.state == GestureState.DRAWING:
 
             if gesture is None:
                 self.state = GestureState.SKETCH_MODE
 
 
-        # Any state → IDLE (cancel)
         if gesture == "FIST":
             self.state = GestureState.IDLE
 

@@ -1,7 +1,8 @@
 env.
-venv
+.venv
 .pdf
 *.log
 *.aux
 *.out
 *.toc
+venv

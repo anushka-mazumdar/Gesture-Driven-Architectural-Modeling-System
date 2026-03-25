@@ -20,7 +20,6 @@ RING_PIP = 14
 PINKY_TIP = 20
 PINKY_PIP = 18
 
-# ---------- Utility ----------
 
 def distance(p1, p2):
     return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
@@ -34,9 +33,8 @@ def palm_center(landmarks):
         landmarks[17]
     ], axis=0).astype(int)
 
-# ---------- Gesture Detection ----------
 
-def is_pinch(landmarks, threshold=0.35):
+def is_pinch(landmarks, threshold=0.25):
     thumb = landmarks[THUMB_TIP]
     index = landmarks[INDEX_TIP]
     wrist = landmarks[WRIST]

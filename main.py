@@ -9,18 +9,22 @@ from vision.landmark_utils import (
     palm_center
 )
 
+# from shapes.shape_2d_classifier import ShapeClassifier
 from gestures.gesture_stabilizer import GestureStabilizer
 from gestures.gesture_motion import GestureMotion, PinchScale
 from gestures.gesture_timer import GestureTimer
 from gestures.gesture_cooldown import GestureCooldown
 from gestures.gesture_state import GestureStateMachine
-
+from shapes.contour_processing import ContourProcessor
+from shapes.stroke_processing import StrokeProcessor
 
 INDEX_TIP = 8
 
 
 tracker = HandTracker()
-
+processor = ContourProcessor()
+# classifier = ShapeClassifier()
+stroke_processor = StrokeProcessor()
 stabilizer = GestureStabilizer(buffer_size=5)
 cooldown = GestureCooldown(cooldown_time=0.5)
 motion = GestureMotion()
@@ -36,6 +40,11 @@ raw_gesture = None
 state = None
 
 
+prev_x = None
+prev_y = None
+smooth_factor = 0.7
+
+
 while True:
 
     frame, landmarks = tracker.get_frame()
@@ -47,7 +56,6 @@ while True:
 
     if landmarks is not None:
 
-        # -------- Base Gesture Detection --------
 
         if is_pinch(landmarks):
             raw_gesture = "PINCH"
@@ -59,12 +67,12 @@ while True:
             raw_gesture = "OPEN PALM"
 
 
-        # -------- Stabilize Gesture --------
+        # -------- Stabilization --------
 
         stable_gesture = stabilizer.update(raw_gesture)
 
 
-        # -------- Cooldown Filter --------
+        # -------- Cooldown --------
 
         gesture = cooldown.update(stable_gesture)
 
@@ -73,50 +81,53 @@ while True:
 
         if gesture == "OPEN PALM":
             if timer.check("OPEN PALM", 3):
-                cv2.putText(frame, "OPEN PALM (3s)", (30,40),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (255,0,0), 2)
+                panel.active = True
 
         elif gesture == "PINCH":
-            if timer.check("PINCH", 1):
-                cv2.putText(frame, "PINCH HOLD", (30,40),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,0), 2)
+            timer.check("PINCH", 1)
 
         elif gesture == "FIST":
-            if timer.check("FIST", 2):
-                cv2.putText(frame, "FIST (DELETE)", (30,40),
-                            cv2.FONT_HERSHEY_SIMPLEX, 1, (0,0,255), 2)
+            timer.check("FIST", 2)
 
 
-        # -------- Gesture State Machine --------
+        # -------- State Machine --------
 
         state = state_machine.update(gesture)
 
 
-        # -------- Motion Gestures --------
+        # -------- Motion Detection --------
 
-        swipe = motion.detect_swipe(landmarks)
-        scale_event = scale.detect_scale(landmarks)
-
-        if swipe:
-            cv2.putText(frame, swipe, (30,90),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0,255,255), 2)
-
-        if scale_event:
-            cv2.putText(frame, scale_event, (30,140),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (255,255,0), 2)
+        motion.detect_swipe(landmarks)
+        scale.detect_scale(landmarks)
 
 
         # -------- Drawing Logic --------
 
         index_point = landmarks[INDEX_TIP]
 
-        x = int(index_point[0] * 2)
-        y = int(index_point[1] * 2)
+        x = int(index_point[0])
+        y = int(index_point[1])
 
-        if state == "DRAWING":
-            panel.draw_stroke((x, y))
-        else:
-             panel.finish_stroke()
+
+        # smoothing
+
+        if prev_x is None:
+            prev_x, prev_y = x, y
+
+        x = int(prev_x * smooth_factor + x * (1 - smooth_factor))
+        y = int(prev_y * smooth_factor + y * (1 - smooth_factor))
+
+        prev_x, prev_y = x, y
+
+
+        # draw only when system active
+
+        if panel.active:
+
+            if state == "DRAWING":
+                panel.draw_stroke((x, y))
+            else:
+                panel.finish_stroke()
 
 
         # -------- Palm Center --------
@@ -125,19 +136,39 @@ while True:
         cv2.circle(frame, tuple(center), 6, (255,255,0), -1)
 
 
-    # -------- Display State --------
-
-    if state:
-        cv2.putText(frame, f"STATE: {state}", (30,180),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255,255,255), 2)
-
-
     # -------- Render Panel --------
 
     display = panel.render(frame)
 
-    cv2.imshow("Sketch Panel", display)
 
+    # -------- Contour + Shape Detection --------
+
+    if panel.completed_strokes:
+
+        stroke = panel.completed_strokes[-1]
+
+        simplified = processor.simplify_stroke(stroke)
+
+        if simplified:
+
+            for p in simplified:
+                cv2.circle(display, p, 6, (0,255,0), -1)
+
+            # shape = classifier.classify(simplified)
+
+            # if shape:
+            #     cv2.putText(
+            #         display,
+            #         shape,
+            #         (simplified[0][0], simplified[0][1] - 20),
+            #         cv2.FONT_HERSHEY_SIMPLEX,
+            #         0.8,
+            #         (0,255,0),
+            #         2
+            #     )
+
+
+    cv2.imshow("Sketch Panel", display)
 
     if cv2.waitKey(1) & 0xFF == 27:
         break

@@ -8,32 +8,50 @@ class SketchPanel:
 
         self.width = width
         self.height = height
-        self.current_stroke = []
-        self.completed_strokes = []
-        self.stroke_layer = np.zeros((height, width, 3), dtype=np.uint8)
-        self.background = np.zeros((height, width, 3), dtype=np.uint8)
-        self.canvas = np.zeros((height, width, 3), dtype=np.uint8)
 
         self.camera_width = 320
         self.camera_height = 240
 
+        self.stroke_layer = np.zeros((height, width, 3), dtype=np.uint8)
+        self.background = np.zeros((height, width, 3), dtype=np.uint8)
+        self.canvas = np.zeros((height, width, 3), dtype=np.uint8)
+
+        self.active = False
+
         self.prev_point = None
-        self.points = []
+        self.current_stroke = []
+        self.completed_strokes = []
 
         self.draw_grid()
 
 
     def draw_grid(self):
 
-        self.background[:] = (55, 60, 70)
+        self.background[:] = (38, 16, 16)
 
-        grid_size = 15
+        small_gap = 15
+        large_gap = 75
 
-        for x in range(0, self.width, grid_size):
-            cv2.line(self.background, (x,0), (x,self.height), (85,90,100), 1)
+        # small grid lines
+        for x in range(0, self.width, small_gap):
+            cv2.line(self.background, (x, 0), (x, self.height), (60, 75, 95), 1)
 
-        for y in range(0, self.height, grid_size):
-            cv2.line(self.background, (0,y), (self.width,y), (85,90,100), 1)
+        for y in range(0, self.height, small_gap):
+            cv2.line(self.background, (0, y), (self.width, y), (60, 75, 95), 1)
+
+        # large grid lines (every 5 small cells)
+        for x in range(0, self.width, large_gap):
+            cv2.line(self.background, (x, 0), (x, self.height), (90, 110, 135), 1)
+
+        for y in range(0, self.height, large_gap):
+            cv2.line(self.background, (0, y), (self.width, y), (90, 110, 135), 1)
+
+        # crosshair plus markers at large grid intersections
+        cross_size = 4
+        for x in range(0, self.width, large_gap):
+            for y in range(0, self.height, large_gap):
+                cv2.line(self.background, (x - cross_size, y), (x + cross_size, y), (140, 165, 190), 1)
+                cv2.line(self.background, (x, y - cross_size), (x, y + cross_size), (140, 165, 190), 1)
 
 
     def draw_stroke(self, point):
@@ -48,43 +66,37 @@ class SketchPanel:
 
         dist = (dx*dx + dy*dy) ** 0.5
 
-        if dist < 5:
+        if dist < 3:
             return
 
-        smooth_x = int((point[0] + self.prev_point[0]) / 2)
-        smooth_y = int((point[1] + self.prev_point[1]) / 2)
+        smooth_x = int(self.prev_point[0] * 0.7 + point[0] * 0.3)
+        smooth_y = int(self.prev_point[1] * 0.7 + point[1] * 0.3)
 
         smooth_point = (smooth_x, smooth_y)
 
-        cv2.line(self.stroke_layer, self.prev_point, smooth_point, (255,255,255), 3)
+        cv2.line(self.stroke_layer, self.prev_point, smooth_point, (255, 255, 255), 3)
 
         self.prev_point = smooth_point
-
         self.current_stroke.append(smooth_point)
 
 
-        def reset_stroke(self):
-
-            self.prev_point = None
-
-
-    def render(self, frame):
-
-        self.canvas[:] = self.background
-
-        # add strokes
-        self.canvas = cv2.add(self.canvas, self.stroke_layer)
-
-        # draw camera preview
-        cam = cv2.resize(frame, (self.camera_width, self.camera_height))
-        self.canvas[0:self.camera_height, 0:self.camera_width] = cam
-
-        return self.canvas
-    
     def finish_stroke(self):
 
-        if len(self.current_stroke) > 5:
+        if len(self.current_stroke) > 2:
             self.completed_strokes.append(self.current_stroke)
 
         self.current_stroke = []
         self.prev_point = None
+
+
+    def render(self, frame):
+
+        self.canvas[:] = (38, 16, 16)
+
+        if self.active:
+            self.canvas[:] = self.background
+            self.canvas = cv2.add(self.canvas, self.stroke_layer)
+
+        cam = cv2.resize(frame, (self.camera_width, self.camera_height))
+
+        return self.canvas
