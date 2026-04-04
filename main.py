@@ -38,7 +38,7 @@ renderer         = Renderer(PANEL_W, PANEL_H)
 obj_selection    = ObjectSelection(renderer)
 manipulation     = Manipulation()
 snapping         = Snapping()
-stabilizer       = GestureStabilizer(buffer_size=6)
+stabilizer       = GestureStabilizer(buffer_size=4)
 cooldown         = GestureCooldown(cooldown_time=0.3)
 motion           = GestureMotion()
 scale_detector   = PinchScale()
@@ -78,11 +78,9 @@ def exit_manipulation():
 
 
 def try_convert_stroke():
-    """Finish current stroke and send to 3D factory."""
     global converting, convert_start
     pts, closed = stroke_processor.finish_stroke()
     panel.finish_stroke()
-
     if pts:
         mesh = factory.create_from_stroke(pts, closed=closed)
         if mesh:
@@ -108,6 +106,9 @@ while True:
     if frame is None:
         break
 
+    # safe defaults — always defined regardless of landmarks
+    tilt        = (0.0, 0.0)
+    swipe       = None
     cursor_x    = prev_x or PANEL_W // 2
     cursor_y    = prev_y or PANEL_H // 2
     near_object = False
@@ -129,16 +130,18 @@ while True:
         prev_x, prev_y = x, y
         cursor_x, cursor_y = x, y
 
-        # ── Detect all gestures this frame ────────────────────────────
-        pinching    = is_pinch(landmarks)
-        index_only  = is_index_only(landmarks)
-        peace       = is_peace_sign(landmarks)
-        fist        = is_closed_fist(landmarks)
-        open_palm   = is_open_palm(landmarks)
-        tilt        = get_hand_tilt_vector(landmarks)
-        swipe       = motion.detect_swipe(landmarks)
+        # ── Compute tilt and swipe first ──────────────────────────────
+        tilt  = get_hand_tilt_vector(landmarks)
+        swipe = motion.detect_swipe(landmarks)
 
-        # ── Stabilized gesture for state machine / timers ─────────────
+        # ── Detect all gestures this frame ────────────────────────────
+        pinching   = is_pinch(landmarks)
+        index_only = is_index_only(landmarks) and not pinching
+        peace      = is_peace_sign(landmarks)
+        fist       = is_closed_fist(landmarks)
+        open_palm  = is_open_palm(landmarks)
+
+        # ── Raw gesture priority ──────────────────────────────────────
         raw_gesture = None
         if pinching:
             raw_gesture = "PINCH"
@@ -186,38 +189,31 @@ while True:
         # ══════════════════════════════════════════════════════════════
         if manipulating:
 
-            # peace sign → scale mode
             if peace and not manipulation.in_scale_mode:
                 manipulation.enter_scale_mode()
 
-            # pinch in scale mode → back to move
             if pinching and manipulation.in_scale_mode:
                 manipulation.exit_scale_mode()
 
-            # move while pinching
             if pinching and not manipulation.in_scale_mode:
                 manipulation.update_move((x, y), PANEL_W, PANEL_H)
                 selected = obj_selection.get_selected()
                 snapping.update(selected, renderer.objects)
 
-            # scale via peace spread
             if manipulation.in_scale_mode:
                 spread = get_peace_spread(landmarks)
                 manipulation.update_scale_peace(spread)
 
-            # rotation always active while manipulating
             manipulation.update_rotate_free(tilt)
 
-            # Z depth
             if swipe in ('UP', 'DOWN'):
                 manipulation.update_depth(swipe)
 
-            # release pinch while in move mode = exit manipulation
             if not pinching and not manipulation.in_scale_mode:
                 exit_manipulation()
 
         # ══════════════════════════════════════════════════════════════
-        # SELECTION — pinch on object while NOT manipulating
+        # SELECTION
         # ══════════════════════════════════════════════════════════════
         elif pinching and panel.active and not converting:
 
@@ -227,18 +223,15 @@ while True:
                     enter_manipulation(hit)
 
         # ══════════════════════════════════════════════════════════════
-        # DRAWING MODE — index only finger
+        # DRAWING MODE
         # ══════════════════════════════════════════════════════════════
         elif panel.active and not converting and not manipulating:
 
             if index_only:
 
                 if stroke_processor.is_paused():
-                    # index came back — resume within window
                     stroke_processor.resume_stroke()
-
                 elif not stroke_processor.is_drawing():
-                    # fresh stroke start
                     stroke_processor.start_stroke()
 
                 panel.draw_stroke((x, y))
@@ -247,21 +240,16 @@ while True:
             else:
 
                 if stroke_processor.is_drawing():
-                    # index just dropped — start pause timer
                     stroke_processor.pause_stroke()
                     panel.finish_stroke()
 
                 elif stroke_processor.is_paused():
-                    # still paused — check if window expired
                     if stroke_processor.pause_expired():
                         if stroke_processor.has_points():
                             try_convert_stroke()
 
-        # ── Palm centre dot ───────────────────────────────────────────
-            
-
     else:
-        # no hand detected — if paused and window expires, convert
+        # no hand — expire pause if needed
         if stroke_processor.is_paused() and stroke_processor.pause_expired():
             if stroke_processor.has_points():
                 try_convert_stroke()

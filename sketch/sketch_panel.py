@@ -18,6 +18,8 @@ class SketchPanel:
         self.current_stroke    = []
         self.completed_strokes = []
 
+        self.MIN_DRAW_DIST = 6   # pixels — below this nothing is drawn
+
         self.draw_grid()
 
 
@@ -29,16 +31,18 @@ class SketchPanel:
         large_gap = 75
 
         for x in range(0, self.width, small_gap):
-            cv2.line(self.background, (x, 0), (x, self.height), (60, 75, 95), 1)
-
+            cv2.line(self.background, (x, 0), (x, self.height),
+                     (60, 75, 95), 1)
         for y in range(0, self.height, small_gap):
-            cv2.line(self.background, (0, y), (self.width, y), (60, 75, 95), 1)
+            cv2.line(self.background, (0, y), (self.width, y),
+                     (60, 75, 95), 1)
 
         for x in range(0, self.width, large_gap):
-            cv2.line(self.background, (x, 0), (x, self.height), (90, 110, 135), 1)
-
+            cv2.line(self.background, (x, 0), (x, self.height),
+                     (90, 110, 135), 1)
         for y in range(0, self.height, large_gap):
-            cv2.line(self.background, (0, y), (self.width, y), (90, 110, 135), 1)
+            cv2.line(self.background, (0, y), (self.width, y),
+                     (90, 110, 135), 1)
 
         cross_size = 4
         for x in range(0, self.width, large_gap):
@@ -62,7 +66,8 @@ class SketchPanel:
         dy   = point[1] - self.prev_point[1]
         dist = (dx*dx + dy*dy) ** 0.5
 
-        if dist < 3:
+        # skip tiny movements — prevents jitter dots and micro lines
+        if dist < self.MIN_DRAW_DIST:
             return
 
         smooth_x = int(self.prev_point[0] * 0.6 + point[0] * 0.4)
@@ -91,6 +96,6 @@ class SketchPanel:
 
         if self.active:
             self.canvas[:] = self.background
-            self.canvas    = cv2.add(self.canvas, self.stroke_layer)
+            cv2.add(self.background, self.stroke_layer, self.canvas)
 
         return self.canvas
