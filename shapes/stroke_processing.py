@@ -1,26 +1,56 @@
 import math
+import time
 
 
 class StrokeProcessor:
 
-    def __init__(self, min_dist=4, smoothing=0.4,
-                 min_points=5, snap_threshold=30):
+    def __init__(self, min_dist=2, smoothing=0.5,
+                 min_points=5, snap_threshold=40,
+                 resume_window=1.0):
 
-        self.min_dist       = min_dist
-        self.smoothing      = smoothing
-        self.min_points     = min_points
-        self.snap_threshold = snap_threshold
+        self.min_dist      = min_dist
+        self.smoothing     = smoothing
+        self.min_points    = min_points
+        self.snap_threshold= snap_threshold
+        self.resume_window = resume_window
 
         self.current_stroke    = []
         self.completed_strokes = []
         self._prev_smooth      = None
         self._drawing          = False
+        self._paused           = False
+        self._pause_start      = None
 
 
     def start_stroke(self):
+        """Start a brand new stroke."""
         self.current_stroke = []
         self._prev_smooth   = None
         self._drawing       = True
+        self._paused        = False
+        self._pause_start   = None
+
+
+    def resume_stroke(self):
+        """Index came back up within resume window — continue same stroke."""
+        self._drawing     = True
+        self._paused      = False
+        self._pause_start = None
+        self._prev_smooth = None   # reset smooth so no jump from gap
+
+
+    def pause_stroke(self):
+        """Index folded — start pause timer."""
+        self._drawing     = False
+        self._paused      = True
+        self._pause_start = time.time()
+
+
+    def pause_expired(self):
+        """Returns True if pause window has passed — time to finish."""
+        if not self._paused or self._pause_start is None:
+            return False
+        return (time.time() - self._pause_start) >= self.resume_window
 
 
     def add_point(self, raw_point):
@@ -39,7 +69,6 @@ class StrokeProcessor:
 
         dist = math.hypot(smooth[0] - self._prev_smooth[0],
                           smooth[1] - self._prev_smooth[1])
-
         if dist < self.min_dist:
             return
 
@@ -48,8 +77,13 @@ class StrokeProcessor:
 
 
     def finish_stroke(self):
-
-        self._drawing = False
+        """
+        Called when pause expires or explicit finish.
+        Returns (points, closed) or (None, False).
+        """
+        self._drawing     = False
+        self._paused      = False
+        self._pause_start = None
 
         if len(self.current_stroke) < self.min_points:
             self.current_stroke = []
@@ -59,12 +93,10 @@ class StrokeProcessor:
         pts    = list(self.current_stroke)
         closed = False
 
-        # check if start and end are close enough to snap shut
         gap = math.hypot(pts[-1][0] - pts[0][0],
                          pts[-1][1] - pts[0][1])
-
         if gap <= self.snap_threshold:
-            pts.append(pts[0])   # close the loop
+            pts.append(pts[0])
             closed = True
 
         self.completed_strokes.append(pts)
@@ -77,6 +109,11 @@ class StrokeProcessor:
     def is_drawing(self):
         return self._drawing
 
+    def is_paused(self):
+        return self._paused
+
+    def has_points(self):
+        return len(self.current_stroke) > 0
 
     def get_current_stroke(self):
         return list(self.current_stroke)

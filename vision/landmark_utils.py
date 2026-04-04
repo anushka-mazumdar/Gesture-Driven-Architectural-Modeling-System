@@ -1,88 +1,103 @@
-import numpy as np
 import math
-import mediapipe as mp
+import numpy as np
+
+WRIST        = 0
+THUMB_TIP    = 4
+INDEX_MCP    = 5
+INDEX_PIP    = 6
+INDEX_TIP    = 8
+MIDDLE_MCP   = 9
+MIDDLE_PIP   = 10
+MIDDLE_TIP   = 12
+RING_MCP     = 13
+RING_TIP     = 16
+PINKY_MCP    = 17
+PINKY_TIP    = 20
+THUMB_IP     = 3
 
 
-# ---------- Landmark Indices ----------
-THUMB_TIP = 4
-INDEX_TIP = 8
-INDEX_MCP = 5
-WRIST = 0
-INDEX_TIP = 8
-INDEX_PIP = 6
-
-MIDDLE_TIP = 12
-MIDDLE_PIP = 10
-
-RING_TIP = 16
-RING_PIP = 14
-
-PINKY_TIP = 20
-PINKY_PIP = 18
-
-
-def distance(p1, p2):
-    return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
-
-def palm_center(landmarks):
-    return np.mean([
-        landmarks[0],
-        landmarks[5],
-        landmarks[9],
-        landmarks[13],
-        landmarks[17]
-    ], axis=0).astype(int)
-
-
-def is_pinch(landmarks, threshold=0.25):
+def is_pinch(landmarks, threshold=40):
     thumb = landmarks[THUMB_TIP]
     index = landmarks[INDEX_TIP]
-    wrist = landmarks[WRIST]
-    index_mcp = landmarks[INDEX_MCP]
+    d = math.hypot(thumb[0]-index[0], thumb[1]-index[1])
+    return d < threshold
 
-    thumb_index_dist = distance(thumb, index)
 
-    palm_size = distance(wrist, index_mcp)
+def is_index_only(landmarks):
+    """
+    True when only index finger is extended upward,
+    all other fingers folded down.
+    This is the drawing gesture.
+    """
+    index_up   = landmarks[INDEX_TIP][1]  < landmarks[INDEX_MCP][1]
+    middle_down= landmarks[MIDDLE_TIP][1] > landmarks[MIDDLE_PIP][1]
+    ring_down  = landmarks[RING_TIP][1]   > landmarks[RING_MCP][1]
+    pinky_down = landmarks[PINKY_TIP][1]  > landmarks[PINKY_MCP][1]
 
-    if palm_size == 0:
-        return False
+    # thumb must not be pinching index
+    thumb_clear = math.hypot(
+        landmarks[THUMB_TIP][0] - landmarks[INDEX_TIP][0],
+        landmarks[THUMB_TIP][1] - landmarks[INDEX_TIP][1]
+    ) > 35
 
-    ratio = thumb_index_dist / palm_size
+    return index_up and middle_down and ring_down and pinky_down and thumb_clear
 
-    return ratio < threshold
 
 def is_open_palm(landmarks):
+    tips = [THUMB_TIP, INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP]
+    mcps = [2, INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP]
+    return all(landmarks[t][1] < landmarks[m][1]
+               for t, m in zip(tips, mcps))
 
-    fingers_extended = 0
-
-    if landmarks[INDEX_TIP][1] < landmarks[INDEX_PIP][1]:
-        fingers_extended += 1
-
-    if landmarks[MIDDLE_TIP][1] < landmarks[MIDDLE_PIP][1]:
-        fingers_extended += 1
-
-    if landmarks[RING_TIP][1] < landmarks[RING_PIP][1]:
-        fingers_extended += 1
-
-    if landmarks[PINKY_TIP][1] < landmarks[PINKY_PIP][1]:
-        fingers_extended += 1
-
-    return fingers_extended >= 3
 
 def is_closed_fist(landmarks):
+    tips = [INDEX_TIP, MIDDLE_TIP, RING_TIP, PINKY_TIP]
+    mcps = [INDEX_MCP, MIDDLE_MCP, RING_MCP, PINKY_MCP]
+    return all(landmarks[t][1] > landmarks[m][1]
+               for t, m in zip(tips, mcps))
 
-    fingers_folded = 0
 
-    if landmarks[INDEX_TIP][1] > landmarks[INDEX_PIP][1]:
-        fingers_folded += 1
+def is_peace_sign(landmarks):
+    """
+    Index and middle extended, ring and pinky folded,
+    thumb not pinching.
+    """
+    index_up   = landmarks[INDEX_TIP][1]  < landmarks[INDEX_MCP][1]
+    middle_up  = landmarks[MIDDLE_TIP][1] < landmarks[MIDDLE_MCP][1]
+    ring_down  = landmarks[RING_TIP][1]   > landmarks[RING_MCP][1]
+    pinky_down = landmarks[PINKY_TIP][1]  > landmarks[PINKY_MCP][1]
+    thumb_clear = math.hypot(
+        landmarks[THUMB_TIP][0] - landmarks[INDEX_TIP][0],
+        landmarks[THUMB_TIP][1] - landmarks[INDEX_TIP][1]
+    ) > 40
+    return index_up and middle_up and ring_down and pinky_down and thumb_clear
 
-    if landmarks[MIDDLE_TIP][1] > landmarks[MIDDLE_PIP][1]:
-        fingers_folded += 1
 
-    if landmarks[RING_TIP][1] > landmarks[RING_PIP][1]:
-        fingers_folded += 1
+def get_hand_tilt_vector(landmarks):
+    """
+    Normalised 2D vector from wrist to middle MCP.
+    Represents overall hand tilt direction for free rotation.
+    """
+    wx, wy = landmarks[WRIST][0],      landmarks[WRIST][1]
+    mx, my = landmarks[MIDDLE_MCP][0], landmarks[MIDDLE_MCP][1]
+    dx, dy = mx - wx, my - wy
+    length = math.hypot(dx, dy)
+    if length < 0.001:
+        return (0.0, 0.0)
+    return (dx / length, dy / length)
 
-    if landmarks[PINKY_TIP][1] > landmarks[PINKY_PIP][1]:
-        fingers_folded += 1
 
-    return fingers_folded >= 3
+def get_peace_spread(landmarks):
+    """
+    Distance between index tip and middle tip.
+    Scale handle in peace sign mode.
+    """
+    ix, iy = landmarks[INDEX_TIP][0],  landmarks[INDEX_TIP][1]
+    mx, my = landmarks[MIDDLE_TIP][0], landmarks[MIDDLE_TIP][1]
+    return math.hypot(ix - mx, iy - my)
+
+
+def palm_center(landmarks):
+    cx = int((landmarks[WRIST][0] + landmarks[MIDDLE_MCP][0]) / 2)
+    cy = int((landmarks[WRIST][1] + landmarks[MIDDLE_MCP][1]) / 2)
+    return (cx, cy)

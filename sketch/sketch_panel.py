@@ -4,22 +4,18 @@ import cv2
 
 class SketchPanel:
 
-    def __init__(self, width=1280, height=720):
+    def __init__(self, width=640, height=480):
 
-        self.width = width
+        self.width  = width
         self.height = height
 
-        self.camera_width = 320
-        self.camera_height = 240
+        self.stroke_layer      = np.zeros((height, width, 3), dtype=np.uint8)
+        self.background        = np.zeros((height, width, 3), dtype=np.uint8)
+        self.canvas            = np.zeros((height, width, 3), dtype=np.uint8)
 
-        self.stroke_layer = np.zeros((height, width, 3), dtype=np.uint8)
-        self.background = np.zeros((height, width, 3), dtype=np.uint8)
-        self.canvas = np.zeros((height, width, 3), dtype=np.uint8)
-
-        self.active = False
-
-        self.prev_point = None
-        self.current_stroke = []
+        self.active            = False
+        self.prev_point        = None
+        self.current_stroke    = []
         self.completed_strokes = []
 
         self.draw_grid()
@@ -32,26 +28,27 @@ class SketchPanel:
         small_gap = 15
         large_gap = 75
 
-        # small grid lines
         for x in range(0, self.width, small_gap):
             cv2.line(self.background, (x, 0), (x, self.height), (60, 75, 95), 1)
 
         for y in range(0, self.height, small_gap):
             cv2.line(self.background, (0, y), (self.width, y), (60, 75, 95), 1)
 
-        # large grid lines (every 5 small cells)
         for x in range(0, self.width, large_gap):
             cv2.line(self.background, (x, 0), (x, self.height), (90, 110, 135), 1)
 
         for y in range(0, self.height, large_gap):
             cv2.line(self.background, (0, y), (self.width, y), (90, 110, 135), 1)
 
-        # crosshair plus markers at large grid intersections
         cross_size = 4
         for x in range(0, self.width, large_gap):
             for y in range(0, self.height, large_gap):
-                cv2.line(self.background, (x - cross_size, y), (x + cross_size, y), (140, 165, 190), 1)
-                cv2.line(self.background, (x, y - cross_size), (x, y + cross_size), (140, 165, 190), 1)
+                cv2.line(self.background,
+                         (x - cross_size, y), (x + cross_size, y),
+                         (140, 165, 190), 1)
+                cv2.line(self.background,
+                         (x, y - cross_size), (x, y + cross_size),
+                         (140, 165, 190), 1)
 
 
     def draw_stroke(self, point):
@@ -61,20 +58,19 @@ class SketchPanel:
             self.current_stroke.append(point)
             return
 
-        dx = point[0] - self.prev_point[0]
-        dy = point[1] - self.prev_point[1]
-
+        dx   = point[0] - self.prev_point[0]
+        dy   = point[1] - self.prev_point[1]
         dist = (dx*dx + dy*dy) ** 0.5
 
         if dist < 3:
             return
 
-        smooth_x = int(self.prev_point[0] * 0.7 + point[0] * 0.3)
-        smooth_y = int(self.prev_point[1] * 0.7 + point[1] * 0.3)
-
+        smooth_x = int(self.prev_point[0] * 0.6 + point[0] * 0.4)
+        smooth_y = int(self.prev_point[1] * 0.6 + point[1] * 0.4)
         smooth_point = (smooth_x, smooth_y)
 
-        cv2.line(self.stroke_layer, self.prev_point, smooth_point, (255, 255, 255), 3)
+        cv2.line(self.stroke_layer, self.prev_point,
+                 smooth_point, (255, 255, 255), 2)
 
         self.prev_point = smooth_point
         self.current_stroke.append(smooth_point)
@@ -86,7 +82,7 @@ class SketchPanel:
             self.completed_strokes.append(self.current_stroke)
 
         self.current_stroke = []
-        self.prev_point = None
+        self.prev_point     = None
 
 
     def render(self, frame):
@@ -95,8 +91,6 @@ class SketchPanel:
 
         if self.active:
             self.canvas[:] = self.background
-            self.canvas = cv2.add(self.canvas, self.stroke_layer)
-
-        cam = cv2.resize(frame, (self.camera_width, self.camera_height))
+            self.canvas    = cv2.add(self.canvas, self.stroke_layer)
 
         return self.canvas

@@ -1,5 +1,5 @@
+import math
 import numpy as np
-from vision.landmark_utils import distance
 
 INDEX_TIP = 8
 THUMB_TIP = 4
@@ -24,14 +24,12 @@ class GestureMotion:
         self.prev_index = index
 
         if abs(dx) > threshold and abs(dx) > abs(dy):
-
             if dx > 0:
                 return "SWIPE_RIGHT"
             else:
                 return "SWIPE_LEFT"
 
         if abs(dy) > threshold and abs(dy) > abs(dx):
-
             if dy > 0:
                 return "SWIPE_DOWN"
             else:
@@ -50,7 +48,7 @@ class PinchScale:
         thumb = landmarks[THUMB_TIP]
         index = landmarks[INDEX_TIP]
 
-        d = distance(thumb, index)
+        d = math.hypot(thumb[0] - index[0], thumb[1] - index[1])
 
         if self.prev_distance is None:
             self.prev_distance = d
