@@ -55,18 +55,26 @@ converting       = False
 convert_start    = 0.0
 CONVERT_DURATION = 1.2
 manipulating     = False
+scale_only_mode  = False
+
+delete_candidate  = None
+delete_start_time = None
+DELETE_HOLD       = 1.0
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def enter_manipulation(obj):
-    global manipulating
+def enter_manipulation(obj, scale_only=False):
+    global manipulating, scale_only_mode
     manipulation.set_object(obj)
-    manipulating = True
+    manipulating    = True
+    scale_only_mode = scale_only
+    if scale_only:
+        manipulation.enter_scale_mode()
 
 
 def exit_manipulation():
-    global manipulating
+    global manipulating, scale_only_mode
     selected = obj_selection.get_selected()
     if selected:
         snapping.confirm_snap(selected)
@@ -74,7 +82,8 @@ def exit_manipulation():
     manipulation.stop_rotate()
     manipulation.stop_scale()
     obj_selection.deselect_all()
-    manipulating = False
+    manipulating    = False
+    scale_only_mode = False
 
 
 def try_convert_stroke():
@@ -90,11 +99,27 @@ def try_convert_stroke():
         convert_start = time.time()
 
 
-def draw_cursor(display, x, y, near_object=False):
+def draw_cursor(display, x, y, near_object=False, delete_progress=0.0):
     color  = (0, 255, 150) if near_object else (200, 200, 200)
     radius = 12 if near_object else 8
     cv2.circle(display, (x, y), radius, color, 2)
     cv2.circle(display, (x, y), 2,      color, -1)
+    if delete_progress > 0:
+        angle = int(360 * delete_progress)
+        cv2.ellipse(display, (x, y), (16, 16),
+                    -90, 0, angle, (0, 60, 220), 2)
+
+
+def get_object_at(x, y, threshold=60):
+    for obj in renderer.objects:
+        bounds = obj.get_bounds()
+        if bounds is None:
+            continue
+        cx = obj.position[0] + bounds['center'][0] + PANEL_W / 2
+        cy = -(obj.position[1] + bounds['center'][1]) + PANEL_H / 2
+        if math.hypot(x - cx, y - cy) < threshold:
+            return obj
+    return None
 
 
 # ── Main loop ─────────────────────────────────────────────────────────────────
@@ -106,12 +131,12 @@ while True:
     if frame is None:
         break
 
-    # safe defaults — always defined regardless of landmarks
-    tilt        = (0.0, 0.0)
-    swipe       = None
-    cursor_x    = prev_x or PANEL_W // 2
-    cursor_y    = prev_y or PANEL_H // 2
-    near_object = False
+    tilt            = (0.0, 0.0)
+    swipe           = None
+    cursor_x        = prev_x or PANEL_W // 2
+    cursor_y        = prev_y or PANEL_H // 2
+    near_object     = False
+    delete_progress = 0.0
 
     if landmarks is not None:
 
@@ -130,18 +155,16 @@ while True:
         prev_x, prev_y = x, y
         cursor_x, cursor_y = x, y
 
-        # ── Compute tilt and swipe first ──────────────────────────────
         tilt  = get_hand_tilt_vector(landmarks)
         swipe = motion.detect_swipe(landmarks)
 
-        # ── Detect all gestures this frame ────────────────────────────
+        # ── Detect gestures ───────────────────────────────────────────
         pinching   = is_pinch(landmarks)
         index_only = is_index_only(landmarks) and not pinching
         peace      = is_peace_sign(landmarks)
         fist       = is_closed_fist(landmarks)
         open_palm  = is_open_palm(landmarks)
 
-        # ── Raw gesture priority ──────────────────────────────────────
         raw_gesture = None
         if pinching:
             raw_gesture = "PINCH"
@@ -158,98 +181,143 @@ while True:
         gesture        = cooldown.update(stable_gesture)
 
         # ── Panel activation ──────────────────────────────────────────
-        if gesture == "OPEN PALM":
+        if open_palm:
             if timer.check("OPEN PALM", 1.5):
                 panel.active = True
+            if manipulating:
+                exit_manipulation()
 
-        # ── Clear all ─────────────────────────────────────────────────
-        if gesture == "FIST":
+        # ── Hovered object ────────────────────────────────────────────
+        hovered_obj = get_object_at(x, y)
+        near_object = hovered_obj is not None
+
+        # ══════════════════════════════════════════════════════════════
+        # DELETE — fist hover 1s over object
+        # ══════════════════════════════════════════════════════════════
+        if fist and hovered_obj is not None and not manipulating:
+
+            if delete_candidate is not hovered_obj:
+                delete_candidate  = hovered_obj
+                delete_start_time = time.time()
+
+            elapsed         = time.time() - delete_start_time
+            delete_progress = min(elapsed / DELETE_HOLD, 1.0)
+
+            if elapsed >= DELETE_HOLD:
+                renderer.remove_object(delete_candidate)
+                delete_candidate  = None
+                delete_start_time = None
+
+        else:
+            delete_candidate  = None
+            delete_start_time = None
+
+        # ── Clear all — fist 2s with no nearby object ─────────────────
+        if fist and hovered_obj is None:
             if timer.check("FIST", 2):
                 renderer.clear_objects()
                 panel.stroke_layer[:] = 0
                 panel.completed_strokes.clear()
                 stroke_processor.finish_stroke()
-                converting   = False
-                manipulating = False
+                converting      = False
+                manipulating    = False
+                scale_only_mode = False
                 obj_selection.deselect_all()
 
-        # ── Near object check ─────────────────────────────────────────
-        for obj in renderer.objects:
-            bounds = obj.get_bounds()
-            if bounds is None:
-                continue
-            cx = obj.position[0] + bounds['center'][0] + PANEL_W / 2
-            cy = -(obj.position[1] + bounds['center'][1]) + PANEL_H / 2
-            if math.hypot(x - cx, y - cy) < 60:
-                near_object = True
-                break
-
         # ══════════════════════════════════════════════════════════════
-        # MANIPULATION MODE
+        # MANIPULATION MODE — highest priority after delete
         # ══════════════════════════════════════════════════════════════
         if manipulating:
 
-            if peace and not manipulation.in_scale_mode:
-                manipulation.enter_scale_mode()
-
-            if pinching and manipulation.in_scale_mode:
-                manipulation.exit_scale_mode()
-
-            if pinching and not manipulation.in_scale_mode:
-                manipulation.update_move((x, y), PANEL_W, PANEL_H)
-                selected = obj_selection.get_selected()
-                snapping.update(selected, renderer.objects)
-
-            if manipulation.in_scale_mode:
-                spread = get_peace_spread(landmarks)
-                manipulation.update_scale_peace(spread)
-
-            manipulation.update_rotate_free(tilt)
-
-            if swipe in ('UP', 'DOWN'):
-                manipulation.update_depth(swipe)
-
-            if not pinching and not manipulation.in_scale_mode:
+            if open_palm:
                 exit_manipulation()
 
-        # ══════════════════════════════════════════════════════════════
-        # SELECTION
-        # ══════════════════════════════════════════════════════════════
-        elif pinching and panel.active and not converting:
+            elif scale_only_mode:
 
-            if timer.check("PINCH", 1.0):
-                hit = obj_selection.update((x, y), PANEL_W, PANEL_H)
-                if hit:
-                    enter_manipulation(hit)
+                if peace:
+                    spread = get_peace_spread(landmarks)
+                    manipulation.update_scale_peace(spread)
 
-        # ══════════════════════════════════════════════════════════════
-        # DRAWING MODE
-        # ══════════════════════════════════════════════════════════════
-        elif panel.active and not converting and not manipulating:
-
-            if index_only:
-
-                if stroke_processor.is_paused():
-                    stroke_processor.resume_stroke()
-                elif not stroke_processor.is_drawing():
-                    stroke_processor.start_stroke()
-
-                panel.draw_stroke((x, y))
-                stroke_processor.add_point((x, y))
+                if pinching:
+                    scale_only_mode = False
+                    manipulation.exit_scale_mode()
+                    hit = obj_selection.update((x, y), PANEL_W, PANEL_H)
+                    if hit:
+                        manipulation.set_object(hit)
 
             else:
 
-                if stroke_processor.is_drawing():
-                    stroke_processor.pause_stroke()
-                    panel.finish_stroke()
+                if peace and not manipulation.in_scale_mode:
+                    manipulation.enter_scale_mode()
 
-                elif stroke_processor.is_paused():
-                    if stroke_processor.pause_expired():
-                        if stroke_processor.has_points():
-                            try_convert_stroke()
+                if pinching and manipulation.in_scale_mode:
+                    manipulation.exit_scale_mode()
+
+                if pinching and not manipulation.in_scale_mode:
+                    manipulation.update_move((x, y), PANEL_W, PANEL_H)
+                    selected = obj_selection.get_selected()
+                    snapping.update(selected, renderer.objects)
+
+                if manipulation.in_scale_mode:
+                    spread = get_peace_spread(landmarks)
+                    manipulation.update_scale_peace(spread)
+
+                manipulation.update_rotate_free(tilt)
+
+                if swipe in ('UP', 'DOWN'):
+                    manipulation.update_depth(swipe)
+
+                if not pinching and not manipulation.in_scale_mode and not peace:
+                    exit_manipulation()
+
+        # ══════════════════════════════════════════════════════════════
+        # DRAWING MODE — index only finger, completely independent
+        # ══════════════════════════════════════════════════════════════
+        elif index_only and panel.active and not converting:
+
+            if stroke_processor.is_paused():
+                stroke_processor.resume_stroke()
+            elif not stroke_processor.is_drawing():
+                stroke_processor.start_stroke()
+
+            panel.draw_stroke((x, y))
+            stroke_processor.add_point((x, y))
+
+        # ══════════════════════════════════════════════════════════════
+        # SELECTION — pinch or peace on object
+        # ══════════════════════════════════════════════════════════════
+        elif panel.active and not converting and not fist and not index_only:
+
+            if pinching:
+                if timer.check("PINCH", 1.0):
+                    hit = obj_selection.update((x, y), PANEL_W, PANEL_H)
+                    if hit:
+                        enter_manipulation(hit, scale_only=False)
+
+            elif peace:
+                if timer.check("PEACE", 1.0):
+                    hit = get_object_at(x, y)
+                    if hit:
+                        obj_selection.selected_object = hit
+                        hit.selected = True
+                        enter_manipulation(hit, scale_only=True)
+
+        # ══════════════════════════════════════════════════════════════
+        # STROKE PAUSE/FINISH — finger folded down
+        # ══════════════════════════════════════════════════════════════
+        if not index_only and not manipulating and panel.active and not converting:
+
+            if stroke_processor.is_drawing():
+                stroke_processor.pause_stroke()
+                panel.finish_stroke()
+
+            elif stroke_processor.is_paused():
+                if stroke_processor.pause_expired():
+                    if stroke_processor.has_points():
+                        try_convert_stroke()
 
     else:
-        # no hand — expire pause if needed
+        # no hand detected
         if stroke_processor.is_paused() and stroke_processor.pause_expired():
             if stroke_processor.has_points():
                 try_convert_stroke()
@@ -260,7 +328,7 @@ while True:
     if renderer.objects:
         display = renderer.composite_onto(display)
 
-    draw_cursor(display, cursor_x, cursor_y, near_object)
+    draw_cursor(display, cursor_x, cursor_y, near_object, delete_progress)
 
     # ── Converting flash ──────────────────────────────────────────────
     if converting:
@@ -289,7 +357,12 @@ while True:
     # ── HUD ───────────────────────────────────────────────────────────
     if panel.active:
         if manipulating:
-            mode = "SCALE MODE" if manipulation.in_scale_mode else "MOVE MODE"
+            if scale_only_mode:
+                mode = "SCALE ONLY"
+            elif manipulation.in_scale_mode:
+                mode = "SCALE MODE"
+            else:
+                mode = "MOVE MODE"
         elif stroke_processor.is_drawing():
             mode = "DRAWING"
         elif stroke_processor.is_paused():
@@ -299,18 +372,25 @@ while True:
         cv2.putText(display, f"State: {mode}", (12, 24),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 180), 1)
 
+    if delete_progress > 0:
+        cv2.putText(display, "Deleting...",
+                    (cursor_x - 35, cursor_y - 22),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 60, 220), 1)
+
     if manipulating:
-        if manipulation.in_scale_mode:
-            hint = "Spread fingers: Scale  |  Pinch: Back to Move"
+        if scale_only_mode:
+            hint = "Spread fingers: Scale  |  Pinch: Full Control  |  Palm: Exit"
+        elif manipulation.in_scale_mode:
+            hint = "Spread fingers: Scale  |  Pinch: Back to Move  |  Palm: Exit"
         else:
-            hint = "Pinch+Move  |  Peace:Scale  |  Tilt:Rotate  |  Swipe U/D:Depth"
+            hint = "Pinch+Move  |  Peace:Scale  |  Tilt:Rotate  |  Swipe U/D:Depth  |  Palm:Exit"
         cv2.putText(display, hint, (12, PANEL_H - 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.32, (100, 200, 255), 1)
     elif panel.active and not converting:
         cv2.putText(display,
-                    "Index finger: Draw  |  Pinch on shape: Select",
+                    "Index:Draw  |  Pinch:Select+Move  |  Peace:Scale  |  Fist:Delete",
                     (12, PANEL_H - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (150, 150, 180), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (150, 150, 180), 1)
 
     cv2.imshow("2D to 3D", display)
 
