@@ -8,21 +8,15 @@ class Manipulation:
 
         self.active_object   = None
 
-        # move
         self._prev_move_pos  = None
-
-        # rotate
         self._prev_tilt      = None
-
-        # scale
         self._prev_spread    = None
         self.scale_min       = 0.15
         self.scale_max       = 6.0
         self.in_scale_mode   = False
 
-        # sensitivity
         self.move_sensitivity   = 1.0
-        self.rotate_sensitivity = 120.0   # degrees per unit tilt change
+        self.rotate_sensitivity = 120.0
         self.scale_sensitivity  = 0.012
 
 
@@ -35,22 +29,21 @@ class Manipulation:
 
 
     def enter_scale_mode(self):
-        self.in_scale_mode  = True
-        self._prev_spread   = None     # reset so no jump on entry
-        self._prev_move_pos = None
+        # only reset spread — do NOT reset move pos
+        self.in_scale_mode = True
+        self._prev_spread  = None
 
 
     def exit_scale_mode(self):
-        """Called when pinch detected — returns to move mode."""
-        self.in_scale_mode  = False
-        self._prev_spread   = None
+        self.in_scale_mode = False
+        self._prev_spread  = None
 
 
     # ── Move (X-Y) ────────────────────────────────────────────────────
 
     def update_move(self, finger_pos_2d, panel_w, panel_h):
 
-        if self.active_object is None or self.in_scale_mode:
+        if self.active_object is None:
             return
 
         sx =  (finger_pos_2d[0] - panel_w / 2.0)
@@ -69,14 +62,9 @@ class Manipulation:
         self._prev_move_pos = None
 
 
-    # ── Free rotation (wrist tilt vector) ─────────────────────────────
+    # ── Free rotation ─────────────────────────────────────────────────
 
     def update_rotate_free(self, tilt_vector):
-        """
-        tilt_vector: normalised (dx, dy) from wrist to middle MCP.
-        dx drives Y-axis rotation (left/right tilt).
-        dy drives X-axis rotation (forward/back tilt).
-        """
 
         if self.active_object is None:
             return
@@ -85,10 +73,8 @@ class Manipulation:
 
         if self._prev_tilt is not None:
             ptx, pty = self._prev_tilt
-
-            delta_x = (ty  - pty) * self.rotate_sensitivity
-            delta_y = (tx  - ptx) * self.rotate_sensitivity
-
+            delta_x = (ty - pty) * self.rotate_sensitivity
+            delta_y = (tx - ptx) * self.rotate_sensitivity
             self.active_object.rotation[0] += delta_x
             self.active_object.rotation[1] += delta_y
 
@@ -99,13 +85,9 @@ class Manipulation:
         self._prev_tilt = None
 
 
-    # ── Scale via peace sign spread ───────────────────────────────────
+    # ── Scale ─────────────────────────────────────────────────────────
 
     def update_scale_peace(self, spread):
-        """
-        spread: pixel distance between index tip and middle tip.
-        Spread wider = scale up, closer = scale down, uniform all axes.
-        """
 
         if self.active_object is None or not self.in_scale_mode:
             return

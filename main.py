@@ -38,7 +38,7 @@ renderer         = Renderer(PANEL_W, PANEL_H)
 obj_selection    = ObjectSelection(renderer)
 manipulation     = Manipulation()
 snapping         = Snapping()
-stabilizer       = GestureStabilizer(buffer_size=4)
+stabilizer       = GestureStabilizer(buffer_size=2)
 cooldown         = GestureCooldown(cooldown_time=0.3)
 motion           = GestureMotion()
 scale_detector   = PinchScale()
@@ -56,6 +56,8 @@ convert_start    = 0.0
 CONVERT_DURATION = 1.2
 manipulating     = False
 scale_only_mode  = False
+pinch_lost_frames = 0
+PINCH_EXIT_FRAMES = 6   # frames pinch must be gone before exiting
 
 delete_candidate  = None
 delete_start_time = None
@@ -110,14 +112,18 @@ def draw_cursor(display, x, y, near_object=False, delete_progress=0.0):
                     -90, 0, angle, (0, 60, 220), 2)
 
 
-def get_object_at(x, y, threshold=60):
+def get_object_at(x, y, threshold=120):
     for obj in renderer.objects:
         bounds = obj.get_bounds()
         if bounds is None:
-            continue
-        cx = obj.position[0] + bounds['center'][0] + PANEL_W / 2
-        cy = -(obj.position[1] + bounds['center'][1]) + PANEL_H / 2
-        if math.hypot(x - cx, y - cy) < threshold:
+            sc_x =  obj.position[0] + PANEL_W / 2
+            sc_y = -obj.position[1] + PANEL_H / 2
+        else:
+            scene_cx = obj.position[0] + float(bounds['center'][0])
+            scene_cy = obj.position[1] + float(bounds['center'][1])
+            sc_x =  scene_cx + PANEL_W / 2
+            sc_y = -scene_cy + PANEL_H / 2
+        if math.hypot(x - sc_x, y - sc_y) < threshold:
             return obj
     return None
 
@@ -225,50 +231,46 @@ while True:
                 obj_selection.deselect_all()
 
         # ══════════════════════════════════════════════════════════════
-        # MANIPULATION MODE — highest priority after delete
+        # MANIPULATION MODE — peace sign does everything
         # ══════════════════════════════════════════════════════════════
         if manipulating:
 
             if open_palm:
                 exit_manipulation()
 
-            elif scale_only_mode:
+            elif peace:
+                # peace held → move + rotate + scale all active
+                pinch_lost_frames = 0
 
-                if peace:
-                    spread = get_peace_spread(landmarks)
-                    manipulation.update_scale_peace(spread)
+                # enter scale mode once — does NOT reset move pos
+                if not manipulation.in_scale_mode:
+                    manipulation._prev_spread = None   # reset spread only
+                    manipulation.in_scale_mode = True
 
-                if pinching:
-                    scale_only_mode = False
-                    manipulation.exit_scale_mode()
-                    hit = obj_selection.update((x, y), PANEL_W, PANEL_H)
-                    if hit:
-                        manipulation.set_object(hit)
+                # MOVE — hand position drives object X-Y
+                manipulation.update_move((x, y), PANEL_W, PANEL_H)
 
-            else:
-
-                if peace and not manipulation.in_scale_mode:
-                    manipulation.enter_scale_mode()
-
-                if pinching and manipulation.in_scale_mode:
-                    manipulation.exit_scale_mode()
-
-                if pinching and not manipulation.in_scale_mode:
-                    manipulation.update_move((x, y), PANEL_W, PANEL_H)
-                    selected = obj_selection.get_selected()
-                    snapping.update(selected, renderer.objects)
-
-                if manipulation.in_scale_mode:
-                    spread = get_peace_spread(landmarks)
-                    manipulation.update_scale_peace(spread)
-
+                # ROTATE — wrist tilt drives rotation
                 manipulation.update_rotate_free(tilt)
 
-                if swipe in ('UP', 'DOWN'):
-                    manipulation.update_depth(swipe)
+                # SCALE — spread between index and middle tips
+                spread = get_peace_spread(landmarks)
+                manipulation.update_scale_peace(spread)
 
-                if not pinching and not manipulation.in_scale_mode and not peace:
+                # snap check
+                selected = obj_selection.get_selected()
+                snapping.update(selected, renderer.objects)
+
+            else:
+                # peace sign gone — count frames before exiting
+                pinch_lost_frames += 1
+                if pinch_lost_frames >= PINCH_EXIT_FRAMES:
+                    pinch_lost_frames = 0
                     exit_manipulation()
+
+            # Z depth always available via swipe
+            if swipe in ('UP', 'DOWN'):
+                manipulation.update_depth(swipe)
 
         # ══════════════════════════════════════════════════════════════
         # DRAWING MODE — index only finger, completely independent
@@ -284,23 +286,16 @@ while True:
             stroke_processor.add_point((x, y))
 
         # ══════════════════════════════════════════════════════════════
-        # SELECTION — pinch or peace on object
+        # SELECTION — peace sign near object to select
         # ══════════════════════════════════════════════════════════════
         elif panel.active and not converting and not fist and not index_only:
 
-            if pinching:
-                if timer.check("PINCH", 1.0):
-                    hit = obj_selection.update((x, y), PANEL_W, PANEL_H)
-                    if hit:
-                        enter_manipulation(hit, scale_only=False)
-
-            elif peace:
-                if timer.check("PEACE", 1.0):
-                    hit = get_object_at(x, y)
-                    if hit:
-                        obj_selection.selected_object = hit
-                        hit.selected = True
-                        enter_manipulation(hit, scale_only=True)
+            if peace:
+                hit = get_object_at(x, y)
+                if hit:
+                    obj_selection.selected_object = hit
+                    hit.selected = True
+                    enter_manipulation(hit, scale_only=False)
 
         # ══════════════════════════════════════════════════════════════
         # STROKE PAUSE/FINISH — finger folded down
@@ -357,12 +352,7 @@ while True:
     # ── HUD ───────────────────────────────────────────────────────────
     if panel.active:
         if manipulating:
-            if scale_only_mode:
-                mode = "SCALE ONLY"
-            elif manipulation.in_scale_mode:
-                mode = "SCALE MODE"
-            else:
-                mode = "MOVE MODE"
+            mode = "MANIPULATING"
         elif stroke_processor.is_drawing():
             mode = "DRAWING"
         elif stroke_processor.is_paused():
@@ -378,19 +368,15 @@ while True:
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 60, 220), 1)
 
     if manipulating:
-        if scale_only_mode:
-            hint = "Spread fingers: Scale  |  Pinch: Full Control  |  Palm: Exit"
-        elif manipulation.in_scale_mode:
-            hint = "Spread fingers: Scale  |  Pinch: Back to Move  |  Palm: Exit"
-        else:
-            hint = "Pinch+Move  |  Peace:Scale  |  Tilt:Rotate  |  Swipe U/D:Depth  |  Palm:Exit"
-        cv2.putText(display, hint, (12, PANEL_H - 12),
+        cv2.putText(display,
+                    "Peace:Move+Rotate+Scale  |  Swipe U/D:Depth  |  Palm:Exit",
+                    (12, PANEL_H - 12),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.32, (100, 200, 255), 1)
     elif panel.active and not converting:
         cv2.putText(display,
-                    "Index:Draw  |  Pinch:Select+Move  |  Peace:Scale  |  Fist:Delete",
+                    "Index:Draw  |  Peace on shape:Select  |  Fist:Delete",
                     (12, PANEL_H - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (150, 150, 180), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (150, 150, 180), 1)
 
     cv2.imshow("2D to 3D", display)
 
