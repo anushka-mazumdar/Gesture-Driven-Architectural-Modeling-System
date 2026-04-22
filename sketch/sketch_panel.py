@@ -70,8 +70,9 @@ class SketchPanel:
         if dist < self.MIN_DRAW_DIST:
             return
 
-        smooth_x = int(self.prev_point[0] * 0.6 + point[0] * 0.4)
-        smooth_y = int(self.prev_point[1] * 0.6 + point[1] * 0.4)
+        # Better smoothing: 70% previous, 30% current for smoother line with continuity
+        smooth_x = int(self.prev_point[0] * 0.70 + point[0] * 0.30)
+        smooth_y = int(self.prev_point[1] * 0.70 + point[1] * 0.30)
         smooth_point = (smooth_x, smooth_y)
 
         cv2.line(self.stroke_layer, self.prev_point,

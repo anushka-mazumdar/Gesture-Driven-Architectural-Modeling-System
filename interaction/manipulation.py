@@ -4,7 +4,12 @@ import math
 
 class Manipulation:
 
-    def __init__(self):
+    def __init__(self, snapping=None):
+        """
+        Pass the shared Snapping instance so manipulation can propagate
+        moves/rotations/scales to the whole SnapGroup automatically.
+        """
+        self.snapping        = snapping   # injected from main.py
 
         self.active_object   = None
 
@@ -21,15 +26,14 @@ class Manipulation:
 
 
     def set_object(self, obj):
-        self.active_object   = obj
-        self._prev_move_pos  = None
-        self._prev_tilt      = None
-        self._prev_spread    = None
-        self.in_scale_mode   = False
+        self.active_object  = obj
+        self._prev_move_pos = None
+        self._prev_tilt     = None
+        self._prev_spread   = None
+        self.in_scale_mode  = False
 
 
     def enter_scale_mode(self):
-        # only reset spread — do NOT reset move pos
         self.in_scale_mode = True
         self._prev_spread  = None
 
@@ -52,8 +56,13 @@ class Manipulation:
         if self._prev_move_pos is not None:
             dx = (sx - self._prev_move_pos[0]) * self.move_sensitivity
             dy = (sy - self._prev_move_pos[1]) * self.move_sensitivity
+
             self.active_object.position[0] += dx
             self.active_object.position[1] += dy
+
+            # propagate to every other member of the snap group
+            if self.snapping:
+                self.snapping.propagate_move(self.active_object, dx, dy)
 
         self._prev_move_pos = (sx, sy)
 
@@ -72,11 +81,16 @@ class Manipulation:
         tx, ty = tilt_vector
 
         if self._prev_tilt is not None:
-            ptx, pty = self._prev_tilt
+            ptx, pty    = self._prev_tilt
             delta_x = (ty - pty) * self.rotate_sensitivity
             delta_y = (tx - ptx) * self.rotate_sensitivity
+
             self.active_object.rotation[0] += delta_x
             self.active_object.rotation[1] += delta_y
+
+            # propagate rotation to group members
+            if self.snapping:
+                self.snapping.propagate_rotate(self.active_object, delta_x, delta_y)
 
         self._prev_tilt = (tx, ty)
 
@@ -96,9 +110,14 @@ class Manipulation:
             delta = (spread - self._prev_spread) * self.scale_sensitivity
             cur   = float(self.active_object.scale[0])
             new_s = max(self.scale_min, min(self.scale_max, cur + delta))
+
             self.active_object.scale = np.array(
                 [new_s, new_s, new_s], dtype=np.float32
             )
+
+            # propagate uniform scale to every group member
+            if self.snapping:
+                self.snapping.propagate_scale(self.active_object, new_s)
 
         self._prev_spread = spread
 
@@ -117,6 +136,14 @@ class Manipulation:
 
         step = 20.0
         if swipe_direction == 'UP':
-            self.active_object.position[2] += step
+            dz = step
         elif swipe_direction == 'DOWN':
-            self.active_object.position[2] -= step
+            dz = -step
+        else:
+            return
+
+        self.active_object.position[2] += dz
+
+        # propagate depth to group members
+        if self.snapping:
+            self.snapping.propagate_depth(self.active_object, dz)

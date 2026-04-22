@@ -1,179 +1,182 @@
-# Gesture-Driven 2D-to-3D Architectural Modeling System
+# ✋ Gesture-Driven 3D Architectural Modeling System
 
-## 📌 Project Overview
-This project presents a **CPU-optimized, monocular vision-based gesture interface** that allows users to sketch 2D shapes in mid-air using a webcam and convert them into manipulable 3D architectural primitives. The system emphasizes **intentional interaction**, **predictable behavior**, and **academic rigor**, making it suitable as a **final-year engineering project** and a strong **GitHub portfolio project**.
-
-Inspired by futuristic gesture interfaces (e.g., Iron Man-style UI metaphors), this system is **not a hologram**. Instead, it is a **Human–Computer Interaction (HCI) and Computer Vision prototype** designed for reliability on **non-GPU hardware**.
+A real-time, gesture-controlled 3D modeling environment that enables users to sketch, generate, and manipulate 3D objects using only hand movements captured via a webcam.
 
 ---
 
-## 🎯 Key Objectives
-- Enable mid-air **2D sketching** using hand gestures
-- Convert 2D sketches into valid **3D shapes**
-- Allow **gesture-based manipulation** (move, rotate, scale)
-- Support **intentional stacking and detachment** of objects
-- Run entirely on **CPU-only systems**
-- Be **defensible in viva** and suitable for a **research report**
+## 🚀 Overview
+
+This project replaces traditional input devices (mouse/keyboard) with **intuitive hand gestures**, allowing users to:
+
+* Draw 2D strokes in air
+* Convert sketches into 3D geometry
+* Manipulate objects in real time
+* Visualize hand motion using a holographic mesh overlay
+
+Built using **Computer Vision + OpenGL**, the system focuses on responsiveness, stability, and clean interaction design.
 
 ---
 
 ## 🧠 Core Features
-- Single-hand gesture interaction (CPU-optimized)
-- Camera-aligned virtual sketch plane
-- Rule-based gesture recognition (no ML inference during runtime)
-- 2D-to-3D shape mapping with user confirmation
-- Face-based snapping and reversible stacking
-- Deterministic, explainable system behavior
+
+### ✍️ Gesture-Based Drawing
+
+* Draw using **index finger**
+* Smooth stroke interpolation with jitter filtering
+* Automatic stroke completion and cleanup
 
 ---
 
-## 🖐️ Gesture Summary
+### 🧊 3D Shape Generation
 
-| Feature | Gesture |
-|------|--------|
-| Enter Sketch Mode | Open palm (3s) |
-| Draw Shape | Pinch + move |
-| Finish Drawing | Release pinch |
-| Select Object | Pinch + hold (1s) |
-| Move Object | One-finger swipe |
-| Move Depth | Two-finger vertical swipe |
-| Rotate | Wrist rotation |
-| Scale | Pinch open / close |
-| Stack | Bring object near another |
-| Detach | Pinch + pull away |
-| Delete | Closed fist (2s) |
+* Open strokes → **Ribbon (tube) meshes**
+* Closed strokes → **Extruded polygon meshes**
+* Dynamic scaling based on stroke dimensions
 
 ---
 
-## 🏗️ System Architecture
+### 🎮 Real-Time Object Manipulation
+
+Controlled via **peace sign gesture**:
+
+* Move → Hand position
+* Rotate → Wrist tilt
+* Scale → Finger spread
+* Depth → Swipe gestures
+
+---
+
+### 🧲 Snap-Ready Architecture
+
+* Supports **group-based snapping system**
+* Transformation propagation across grouped objects
+* Currently disabled for clean independent interaction
+
+---
+
+### ✋ Holographic Hand Mesh Overlay
+
+* Real-time **wireframe hand visualization**
+* Based on 21 landmark points
+* Styled as a **sci-fi holographic mesh**
+* Positioned as a non-intrusive bottom-right overlay
+* Completely independent from gesture detection logic
+
+---
+
+### 🧠 Gesture Intelligence Layer
+
+* Gesture stabilization (buffer-based)
+* Cooldown system to prevent flickering
+* Hold detection for intentional actions (e.g., delete)
+
+---
+
+### ❌ Delete Mechanism
+
+* Hold **fist over object** for 1 second
+* Visual progress feedback
+* Safe exclusion of hand mesh from deletion
+
+---
+
+## 🏗️ Project Structure
 
 ```
-Webcam Feed
-   ↓
-Hand Detection (MediaPipe)
-   ↓
-Gesture State Machine
-   ↓
-Sketch / Manipulation Logic
-   ↓
-3D Rendering (OpenGL)
-```
-
----
-
-## 🧩 Technology Stack
-
-### Software
-- Python 3.9+
-- OpenCV
-- MediaPipe Hands
-- NumPy
-- PyOpenGL
-
-### Hardware
-- Standard webcam
-- CPU-only laptop/desktop
-- No GPU required
-
----
-
-## 📂 Project Structure
-
-```
-gesture_architecture/
+Gesture-Driven-Architectural-Modeling-System/
 │
-├── vision/          # Hand tracking & landmarks
-├── sketch/          # 2D sketch panel & contour logic
-├── gestures/        # Gesture rules & state machine
-├── shapes/          # 2D recognition & 3D generation
-├── interaction/     # Selection, snapping, manipulation
-├── render/          # OpenGL renderer & primitives
-├── main.py
-└── README.md
+├── gestures/        # Gesture detection, stabilization, state logic
+├── interaction/     # Object selection, manipulation, snapping
+├── render/          # OpenGL renderer + hand mesh
+├── shapes/          # Stroke processing + 3D mesh generation
+├── sketch/          # Drawing panel UI
+├── vision/          # Hand tracking + landmark utilities
+│
+└── main.py          # Main application loop
 ```
 
 ---
 
-## ⚙️ Installation & Setup
+## ⚙️ Tech Stack
 
-### 1. Clone the repository
-```
-git clone https://github.com/yourusername/gesture-architecture.git
-cd gesture-architecture
-```
-
-### 2. Create virtual environment
-```
-python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
-```
-
-### 3. Install dependencies
-```
-pip install -r requirements.txt
-```
-
-### 4. Run the application
-```
-python main.py
-```
+* **Python**
+* **OpenCV** (camera + UI)
+* **MediaPipe** (hand tracking)
+* **OpenGL (PyOpenGL)** (3D rendering)
+* **NumPy** (math + geometry)
 
 ---
 
-## 🧪 Performance Constraints
-- Webcam resolution: **640×480**
-- Vision processing: ~15 FPS
-- Rendering: ~30 FPS
-- Wireframe / flat-shaded geometry only
+## 🎯 Gesture Mapping
+
+| Gesture     | Action                |
+| ----------- | --------------------- |
+| Index Only  | Draw                  |
+| Peace Sign  | Manipulate Object     |
+| Open Palm   | Activate Panel / Exit |
+| Fist (Hold) | Delete Object         |
+| Swipe       | Depth Control         |
 
 ---
 
-## 📊 Evaluation Metrics (for Report)
-- Gesture recognition accuracy
-- Shape classification success rate
-- Interaction latency
-- Frames per second (FPS)
-- User task completion time
+## 🧪 Key Design Decisions
+
+* ❌ Removed complex mesh blending → improved stability
+* ❌ Disabled auto-snapping → better user control
+* ✅ Prioritized **clean architecture over visual gimmicks**
+* ✅ Simplified hand mesh for real-time performance
 
 ---
 
-## 🚧 Limitations
-- No real depth perception (monocular only)
-- No physics simulation
-- No GPU-based visual effects
-- Limited gesture vocabulary by design
+## ⚠️ Known Limitations
+
+* No physics-based interaction
+* Approximate depth perception
+* Gesture ambiguity in extreme lighting
+* Hand mesh is wireframe (not full surface mesh)
 
 ---
 
-## 🔮 Future Enhancements
-- Optional ML-based gesture classification
-- Kalman filtering for smoother tracking
-- Multi-user study
-- VR/AR headset integration
-- Depth camera support
+## 🔮 Future Improvements
+
+* Shader-based glow / bloom effects
+* True surface mesh hand (triangulated)
+* Multi-hand interaction
+* ML-based gesture classification
+* Physics-based snapping
 
 ---
 
-## 🎓 Academic Positioning
-This project is best framed as:
-- **Gesture-Based Human–Computer Interaction System**
-- Supported by **Computer Vision**
-- Applied to **Architectural Sketching and Spatial Modeling**
+## 🏁 Status
+
+✅ Core system stable
+✅ Gesture pipeline optimized
+✅ Hand mesh rendering finalized
+
+🚧 Future work focuses on realism and UX enhancements
+
+---
+
+## 📸 Demo (optional)
+
+*Add screenshots / demo GIFs here*
+
+---
+
+## 📌 Author Notes
+
+This project evolved through multiple iterations focusing on:
+
+* Stability over complexity
+* Real-time responsiveness
+* Clean interaction design
+
+The final system reflects a **minimal, performant, and extensible architecture** for gesture-driven 3D interaction.
 
 ---
 
 ## 📜 License
-This project is intended for **academic and educational use**.
+
+MIT License (or your preferred license)
 
 ---
-
-## 🙌 Acknowledgements
-- MediaPipe by Google
-- OpenCV community
-- OpenGL documentation
-
----
-
-## ✅ Final Note
-This project prioritizes **clarity, control, and correctness** over flashy visuals. It is intentionally scoped to be **implementable, explainable, and defensible** in a final-year academic setting.
-

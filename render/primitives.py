@@ -23,9 +23,10 @@ class RibbonMesh:
         self.position = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         self.rotation = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         self.scale    = np.array([1.0, 1.0, 1.0], dtype=np.float32)
-        self.selected = False
-        self.color    = (0.4, 0.75, 1.0)
-        self.kind     = 'ribbon'
+        self.selected    = False
+        self.highlighted = False
+        self.color       = (0.4, 0.75, 1.0)
+        self.kind        = 'ribbon'
 
         self._build()
 
@@ -201,9 +202,10 @@ class PolygonMesh:
         self.position = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         self.rotation = np.array([0.0, 0.0, 0.0], dtype=np.float32)
         self.scale    = np.array([1.0, 1.0, 1.0], dtype=np.float32)
-        self.selected = False
-        self.color    = (0.55, 1.0, 0.65)
-        self.kind     = 'polygon'
+        self.selected    = False
+        self.highlighted = False
+        self.color       = (0.55, 1.0, 0.65)
+        self.kind        = 'polygon'
 
         self._build()
 

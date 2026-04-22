@@ -4,7 +4,7 @@ import time
 
 class StrokeProcessor:
 
-    def __init__(self, min_dist=6, smoothing=0.5,
+    def __init__(self, min_dist=5, smoothing=0.68,
                  min_points=5, snap_threshold=40,
                  resume_window=1.0, exit_buffer=6):
 
@@ -18,6 +18,7 @@ class StrokeProcessor:
         self.current_stroke    = []
         self.completed_strokes = []
         self._prev_smooth      = None
+        self._prev_raw         = None
         self._drawing          = False
         self._paused           = False
         self._pause_start      = None
@@ -67,11 +68,13 @@ class StrokeProcessor:
 
         if self._prev_smooth is None:
             self._prev_smooth = raw_point
+            self._prev_raw = raw_point
             self.current_stroke.append(raw_point)
             return
 
-        sx = self.smoothing * raw_point[0] + (1 - self.smoothing) * self._prev_smooth[0]
-        sy = self.smoothing * raw_point[1] + (1 - self.smoothing) * self._prev_smooth[1]
+        # Use higher smoothing to reduce jitter (75% weight to previous, 25% to current)
+        sx = self.smoothing * self._prev_smooth[0] + (1 - self.smoothing) * raw_point[0]
+        sy = self.smoothing * self._prev_smooth[1] + (1 - self.smoothing) * raw_point[1]
         smooth = (int(sx), int(sy))
 
         dist = math.hypot(smooth[0] - self._prev_smooth[0],
@@ -81,6 +84,7 @@ class StrokeProcessor:
             return
 
         self._prev_smooth = smooth
+        self._prev_raw = raw_point
         self.current_stroke.append(smooth)
 
 

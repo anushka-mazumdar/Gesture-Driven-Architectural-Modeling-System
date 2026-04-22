@@ -22,6 +22,7 @@ from render.renderer              import Renderer
 from interaction.object_selection import ObjectSelection
 from interaction.manipulation     import Manipulation
 from interaction.snapping         import Snapping
+from render.hand_mesh             import HandMesh
 
 INDEX_TIP = 8
 THUMB_TIP = 4
@@ -29,33 +30,36 @@ WRIST     = 0
 PANEL_W   = 640
 PANEL_H   = 480
 
-# ── Initialise ────────────────────────────────────────────────────────────────
-
 tracker          = HandTracker()
 stroke_processor = StrokeProcessor()
 factory          = Shape3DFactory(panel_width=PANEL_W, panel_height=PANEL_H)
 renderer         = Renderer(PANEL_W, PANEL_H)
 obj_selection    = ObjectSelection(renderer)
-manipulation     = Manipulation()
 snapping         = Snapping()
-stabilizer       = GestureStabilizer(buffer_size=2)
-cooldown         = GestureCooldown(cooldown_time=0.3)
+manipulation     = Manipulation(snapping=snapping)
+hand_mesh        = HandMesh()  # 3D hand overlay
+
+# Add hand mesh overlay to renderer (always visible)
+renderer.add_object(hand_mesh)
+stabilizer       = GestureStabilizer(buffer_size=6)
+cooldown         = GestureCooldown(cooldown_time=0.6)
 motion           = GestureMotion()
 scale_detector   = PinchScale()
 timer            = GestureTimer()
 state_machine    = GestureStateMachine()
 panel            = SketchPanel(width=PANEL_W, height=PANEL_H)
 
-gesture          = None
-state            = None
-prev_x           = None
-prev_y           = None
-SMOOTH           = 0.45
-converting       = False
-convert_start    = 0.0
-CONVERT_DURATION = 1.2
-manipulating     = False
-scale_only_mode  = False
+gesture           = None
+state             = None
+prev_x            = None
+prev_y            = None
+hand_speed        = 0.0                              # px/frame velocity magnitude
+SMOOTH            = 0.45
+converting        = False
+convert_start     = 0.0
+CONVERT_DURATION  = 1.2
+manipulating      = False
+scale_only_mode   = False
 pinch_lost_frames = 0
 PINCH_EXIT_FRAMES = 6   # frames pinch must be gone before exiting
 
@@ -78,8 +82,8 @@ def enter_manipulation(obj, scale_only=False):
 def exit_manipulation():
     global manipulating, scale_only_mode
     selected = obj_selection.get_selected()
-    if selected:
-        snapping.confirm_snap(selected)
+    # snapping.confirm_snap(selected)  # DISABLED: no auto-snap locking
+    snapping.cancel_snap(renderer.objects)
     manipulation.stop_move()
     manipulation.stop_rotate()
     manipulation.stop_scale()
@@ -113,8 +117,15 @@ def draw_cursor(display, x, y, near_object=False, delete_progress=0.0):
 
 
 def get_object_at(x, y, threshold=120):
+
     for obj in renderer.objects:
+
+        #  ignore hand completely
+        if getattr(obj, 'kind', None) == 'hand':
+            continue
+
         bounds = obj.get_bounds()
+
         if bounds is None:
             sc_x =  obj.position[0] + PANEL_W / 2
             sc_y = -obj.position[1] + PANEL_H / 2
@@ -123,8 +134,10 @@ def get_object_at(x, y, threshold=120):
             scene_cy = obj.position[1] + float(bounds['center'][1])
             sc_x =  scene_cx + PANEL_W / 2
             sc_y = -scene_cy + PANEL_H / 2
+
         if math.hypot(x - sc_x, y - sc_y) < threshold:
             return obj
+
     return None
 
 
@@ -156,6 +169,11 @@ while True:
         if prev_x is None:
             prev_x, prev_y = x, y
 
+        # ── Velocity (raw, before smoothing) ──────────────────────────
+        raw_vx     = x - prev_x
+        raw_vy     = y - prev_y
+        hand_speed = math.hypot(raw_vx, raw_vy)
+
         x = int(prev_x * SMOOTH + x * (1 - SMOOTH))
         y = int(prev_y * SMOOTH + y * (1 - SMOOTH))
         prev_x, prev_y = x, y
@@ -186,6 +204,9 @@ while True:
         stable_gesture = stabilizer.update(raw_gesture)
         gesture        = cooldown.update(stable_gesture)
 
+        # ── Update hand mesh overlay ──────────────────────────────────
+        hand_mesh.update_from_landmarks(landmarks, PANEL_W, PANEL_H)
+
         # ── Panel activation ──────────────────────────────────────────
         if open_palm:
             if timer.check("OPEN PALM", 1.5):
@@ -209,26 +230,16 @@ while True:
             elapsed         = time.time() - delete_start_time
             delete_progress = min(elapsed / DELETE_HOLD, 1.0)
 
-            if elapsed >= DELETE_HOLD:
-                renderer.remove_object(delete_candidate)
+            if elapsed >= DELETE_HOLD:    
+                if getattr(delete_candidate, 'kind', None) != 'hand':
+                    renderer.remove_object(delete_candidate)
+
                 delete_candidate  = None
                 delete_start_time = None
 
         else:
             delete_candidate  = None
             delete_start_time = None
-
-        # ── Clear all — fist 2s with no nearby object ─────────────────
-        if fist and hovered_obj is None:
-            if timer.check("FIST", 2):
-                renderer.clear_objects()
-                panel.stroke_layer[:] = 0
-                panel.completed_strokes.clear()
-                stroke_processor.finish_stroke()
-                converting      = False
-                manipulating    = False
-                scale_only_mode = False
-                obj_selection.deselect_all()
 
         # ══════════════════════════════════════════════════════════════
         # MANIPULATION MODE — peace sign does everything
@@ -257,9 +268,13 @@ while True:
                 spread = get_peace_spread(landmarks)
                 manipulation.update_scale_peace(spread)
 
-                # snap check
+                # ── Snap check disabled ──────────────────────────────
                 selected = obj_selection.get_selected()
-                snapping.update(selected, renderer.objects)
+                # snapping.update(selected, renderer.objects)  # DISABLED: no auto-snap
+
+                # ── DETACH — fast yank while peace sign held ──────────
+                if hand_speed > Snapping.DETACH_SPEED and selected:
+                    snapping.detach(selected)
 
             else:
                 # peace sign gone — count frames before exiting
@@ -367,11 +382,17 @@ while True:
                     (cursor_x - 35, cursor_y - 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 60, 220), 1)
 
+    # ── Snap feedback ─────────────────────────────────────────────────
+    if snapping.has_candidate():
+        cv2.putText(display, "Snap ready — release to lock",
+                    (PANEL_W // 2 - 115, 48),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 180), 1)
+
     if manipulating:
         cv2.putText(display,
-                    "Peace:Move+Rotate+Scale  |  Swipe U/D:Depth  |  Palm:Exit",
+                    "Peace:Move+Rotate+Scale  |  Swipe U/D:Depth  |  Palm:Exit  |  Yank:Detach",
                     (12, PANEL_H - 12),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.32, (100, 200, 255), 1)
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.30, (100, 200, 255), 1)
     elif panel.active and not converting:
         cv2.putText(display,
                     "Index:Draw  |  Peace on shape:Select  |  Fist:Delete",
