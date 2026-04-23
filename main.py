@@ -39,7 +39,6 @@ snapping         = Snapping()
 manipulation     = Manipulation(snapping=snapping)
 hand_mesh        = HandMesh()  # 3D hand overlay
 
-# Add hand mesh overlay to renderer (always visible)
 renderer.add_object(hand_mesh)
 stabilizer       = GestureStabilizer(buffer_size=6)
 cooldown         = GestureCooldown(cooldown_time=0.6)
@@ -68,7 +67,6 @@ delete_start_time = None
 DELETE_HOLD       = 1.0
 
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
 
 def enter_manipulation(obj, scale_only=False):
     global manipulating, scale_only_mode
@@ -82,7 +80,6 @@ def enter_manipulation(obj, scale_only=False):
 def exit_manipulation():
     global manipulating, scale_only_mode
     selected = obj_selection.get_selected()
-    # snapping.confirm_snap(selected)  # DISABLED: no auto-snap locking
     snapping.cancel_snap(renderer.objects)
     manipulation.stop_move()
     manipulation.stop_rotate()
@@ -120,7 +117,6 @@ def get_object_at(x, y, threshold=120):
 
     for obj in renderer.objects:
 
-        #  ignore hand completely
         if getattr(obj, 'kind', None) == 'hand':
             continue
 
@@ -141,7 +137,6 @@ def get_object_at(x, y, threshold=120):
     return None
 
 
-# ── Main loop ─────────────────────────────────────────────────────────────────
 
 while True:
 
@@ -169,7 +164,6 @@ while True:
         if prev_x is None:
             prev_x, prev_y = x, y
 
-        # ── Velocity (raw, before smoothing) ──────────────────────────
         raw_vx     = x - prev_x
         raw_vy     = y - prev_y
         hand_speed = math.hypot(raw_vx, raw_vy)
@@ -182,7 +176,6 @@ while True:
         tilt  = get_hand_tilt_vector(landmarks)
         swipe = motion.detect_swipe(landmarks)
 
-        # ── Detect gestures ───────────────────────────────────────────
         pinching   = is_pinch(landmarks)
         index_only = is_index_only(landmarks) and not pinching
         peace      = is_peace_sign(landmarks)
@@ -204,23 +197,18 @@ while True:
         stable_gesture = stabilizer.update(raw_gesture)
         gesture        = cooldown.update(stable_gesture)
 
-        # ── Update hand mesh overlay ──────────────────────────────────
         hand_mesh.update_from_landmarks(landmarks, PANEL_W, PANEL_H)
 
-        # ── Panel activation ──────────────────────────────────────────
         if open_palm:
             if timer.check("OPEN PALM", 1.5):
                 panel.active = True
             if manipulating:
                 exit_manipulation()
 
-        # ── Hovered object ────────────────────────────────────────────
         hovered_obj = get_object_at(x, y)
         near_object = hovered_obj is not None
 
-        # ══════════════════════════════════════════════════════════════
-        # DELETE — fist hover 1s over object
-        # ══════════════════════════════════════════════════════════════
+        
         if fist and hovered_obj is not None and not manipulating:
 
             if delete_candidate is not hovered_obj:
@@ -241,16 +229,13 @@ while True:
             delete_candidate  = None
             delete_start_time = None
 
-        # ══════════════════════════════════════════════════════════════
-        # MANIPULATION MODE — peace sign does everything
-        # ══════════════════════════════════════════════════════════════
+        
         if manipulating:
 
             if open_palm:
                 exit_manipulation()
 
             elif peace:
-                # peace held → move + rotate + scale all active
                 pinch_lost_frames = 0
 
                 # enter scale mode once — does NOT reset move pos
@@ -268,28 +253,21 @@ while True:
                 spread = get_peace_spread(landmarks)
                 manipulation.update_scale_peace(spread)
 
-                # ── Snap check disabled ──────────────────────────────
                 selected = obj_selection.get_selected()
-                # snapping.update(selected, renderer.objects)  # DISABLED: no auto-snap
 
-                # ── DETACH — fast yank while peace sign held ──────────
                 if hand_speed > Snapping.DETACH_SPEED and selected:
                     snapping.detach(selected)
 
             else:
-                # peace sign gone — count frames before exiting
                 pinch_lost_frames += 1
                 if pinch_lost_frames >= PINCH_EXIT_FRAMES:
                     pinch_lost_frames = 0
                     exit_manipulation()
 
-            # Z depth always available via swipe
             if swipe in ('UP', 'DOWN'):
                 manipulation.update_depth(swipe)
 
-        # ══════════════════════════════════════════════════════════════
-        # DRAWING MODE — index only finger, completely independent
-        # ══════════════════════════════════════════════════════════════
+        
         elif index_only and panel.active and not converting:
 
             if stroke_processor.is_paused():
@@ -300,9 +278,7 @@ while True:
             panel.draw_stroke((x, y))
             stroke_processor.add_point((x, y))
 
-        # ══════════════════════════════════════════════════════════════
-        # SELECTION — peace sign near object to select
-        # ══════════════════════════════════════════════════════════════
+        
         elif panel.active and not converting and not fist and not index_only:
 
             if peace:
@@ -312,9 +288,7 @@ while True:
                     hit.selected = True
                     enter_manipulation(hit, scale_only=False)
 
-        # ══════════════════════════════════════════════════════════════
-        # STROKE PAUSE/FINISH — finger folded down
-        # ══════════════════════════════════════════════════════════════
+        
         if not index_only and not manipulating and panel.active and not converting:
 
             if stroke_processor.is_drawing():
@@ -332,7 +306,6 @@ while True:
             if stroke_processor.has_points():
                 try_convert_stroke()
 
-    # ── Compose display ───────────────────────────────────────────────
     display = panel.render(frame)
 
     if renderer.objects:
@@ -340,7 +313,6 @@ while True:
 
     draw_cursor(display, cursor_x, cursor_y, near_object, delete_progress)
 
-    # ── Converting flash ──────────────────────────────────────────────
     if converting:
         elapsed = time.time() - convert_start
         if elapsed < CONVERT_DURATION:
@@ -364,7 +336,6 @@ while True:
         else:
             converting = False
 
-    # ── HUD ───────────────────────────────────────────────────────────
     if panel.active:
         if manipulating:
             mode = "MANIPULATING"
@@ -382,7 +353,6 @@ while True:
                     (cursor_x - 35, cursor_y - 22),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 60, 220), 1)
 
-    # ── Snap feedback ─────────────────────────────────────────────────
     if snapping.has_candidate():
         cv2.putText(display, "Snap ready — release to lock",
                     (PANEL_W // 2 - 115, 48),

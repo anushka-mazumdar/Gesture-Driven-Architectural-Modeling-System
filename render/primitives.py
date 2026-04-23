@@ -2,9 +2,7 @@ import numpy as np
 import math
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# RibbonMesh  —  open stroke as a 3D tube/pipe
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class RibbonMesh:
 
@@ -184,9 +182,7 @@ class RibbonMesh:
         return {'min': mins, 'max': maxs, 'center': (mins + maxs) / 2}
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# PolygonMesh  —  closed stroke extruded to proper depth
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 class PolygonMesh:
 

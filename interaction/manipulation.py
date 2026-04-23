@@ -43,7 +43,6 @@ class Manipulation:
         self._prev_spread  = None
 
 
-    # ── Move (X-Y) ────────────────────────────────────────────────────
 
     def update_move(self, finger_pos_2d, panel_w, panel_h):
 
@@ -60,7 +59,6 @@ class Manipulation:
             self.active_object.position[0] += dx
             self.active_object.position[1] += dy
 
-            # propagate to every other member of the snap group
             if self.snapping:
                 self.snapping.propagate_move(self.active_object, dx, dy)
 
@@ -71,7 +69,6 @@ class Manipulation:
         self._prev_move_pos = None
 
 
-    # ── Free rotation ─────────────────────────────────────────────────
 
     def update_rotate_free(self, tilt_vector):
 
@@ -88,7 +85,6 @@ class Manipulation:
             self.active_object.rotation[0] += delta_x
             self.active_object.rotation[1] += delta_y
 
-            # propagate rotation to group members
             if self.snapping:
                 self.snapping.propagate_rotate(self.active_object, delta_x, delta_y)
 
@@ -99,7 +95,6 @@ class Manipulation:
         self._prev_tilt = None
 
 
-    # ── Scale ─────────────────────────────────────────────────────────
 
     def update_scale_peace(self, spread):
 
@@ -115,7 +110,6 @@ class Manipulation:
                 [new_s, new_s, new_s], dtype=np.float32
             )
 
-            # propagate uniform scale to every group member
             if self.snapping:
                 self.snapping.propagate_scale(self.active_object, new_s)
 
@@ -127,7 +121,6 @@ class Manipulation:
         self.in_scale_mode = False
 
 
-    # ── Z depth ───────────────────────────────────────────────────────
 
     def update_depth(self, swipe_direction):
 
@@ -144,6 +137,5 @@ class Manipulation:
 
         self.active_object.position[2] += dz
 
-        # propagate depth to group members
         if self.snapping:
             self.snapping.propagate_depth(self.active_object, dz)

@@ -189,9 +189,7 @@ class Renderer:
         gl.glPopMatrix()
 
 
-    # ─────────────────────────────
-    # 🔥 HAND
-    # ─────────────────────────────
+    
     def _draw_hand(self, hand):
 
         if hand.landmarks is None:
@@ -226,7 +224,6 @@ class Renderer:
         for row in palm_rows:
 
             segments = [
-                # ❌ REMOVE THIS → (row[0], row[1])  ← causes thumb-index web
 
                 (row[1], row[2]),  # index → middle
                 (row[2], row[3]),  # middle → ring
@@ -281,10 +278,8 @@ class Renderer:
 
             t = i / (len(indices)-1)
 
-            # 🔥 thicker, smooth finger shape
             r = radius * (0.75 + 0.35*(1 - t**1.2))
 
-            # ───────────── ring ─────────────
             gl.glBegin(gl.GL_LINE_LOOP)
             for j in range(segments):
                 angle = 2*np.pi*j/segments
@@ -292,7 +287,6 @@ class Renderer:
                 gl.glVertex3f(*(p1 + offset))
             gl.glEnd()
 
-            # ───────────── minimal verticals ─────────────
             gl.glBegin(gl.GL_LINES)
             for j in range(0, segments, 2):
                 angle = 2*np.pi*j/segments
@@ -302,7 +296,6 @@ class Renderer:
                 gl.glVertex3f(*(p2 + offset))
             gl.glEnd()
 
-        # 🔥 rounded fingertip (ONLY ONCE)
         tip = pts[indices[-1]]
         prev = pts[indices[-2]]
 
@@ -326,9 +319,6 @@ class Renderer:
                 offset = np.cos(angle)*side*(radius*0.3) + np.sin(angle)*up*(radius*0.3)
                 gl.glVertex3f(*(tip + offset))
             gl.glEnd()
-        # ─────────────────────────────
-        # 🔥 ROUNDED TIP
-        # ─────────────────────────────
         tip = pts[indices[-1]]
         prev = pts[indices[-2]]
 
@@ -357,7 +347,6 @@ class Renderer:
 
             gl.glEnd()
 
-    # ─────────────────────────────
     def add_object(self, obj):
         self.objects.append(obj)
 

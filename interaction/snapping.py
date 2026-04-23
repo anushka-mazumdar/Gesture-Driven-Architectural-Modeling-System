@@ -64,9 +64,7 @@ class Snapping:
         self.snap_candidate = None   # (moving_obj, target_obj, snap_pos)
         self._groups        = []     # list[SnapGroup]
 
-    # ─────────────────────────────────────────────────────────────────
-    # Public API called from main.py / manipulation.py
-    # ─────────────────────────────────────────────────────────────────
+    
 
     def update(self, moving_obj, all_objects):
         """
@@ -98,7 +96,6 @@ class Snapping:
                     best_target   = obj
                     best_snap_pos = snap_pos
 
-        # update highlight preview
         for obj in all_objects:
             if obj is not best_target:
                 obj.highlighted = False
@@ -107,7 +104,6 @@ class Snapping:
 
         self.snap_candidate = (moving_obj, best_target, best_snap_pos) if best_target else None
 
-        # auto-lock when the moving object is close enough to the target
         if best_target and best_dist < self.snap_distance * 0.4:
             self.confirm_snap(moving_obj)
             return best_target
@@ -127,7 +123,6 @@ class Snapping:
         if mover is not moving_obj:
             return False
 
-        # --- translate moving_obj (and its whole group) to snap position ---
         delta = snap_pos - moving_obj.position
         moving_group = self.get_group(moving_obj)
 
@@ -137,12 +132,10 @@ class Snapping:
         else:
             moving_obj.position = snap_pos.copy()
 
-        # --- merge into one SnapGroup ---
         target_group  = self.get_group(target)
-        moving_group2 = self.get_group(moving_obj)   # re-fetch after translate
+        moving_group2 = self.get_group(moving_obj)   
 
         if target_group and moving_group2:
-            # absorb moving group into target group
             for m in list(moving_group2.members):
                 offset = m.position - target_group.anchor.position
                 target_group.add(m, offset)
@@ -244,9 +237,7 @@ class Snapping:
                 continue
             m.scale = np.array([new_scale, new_scale, new_scale], dtype=np.float32)
 
-    # ─────────────────────────────────────────────────────────────────
-    # Internal geometry helpers
-    # ─────────────────────────────────────────────────────────────────
+    
 
     def _centre_dist(self, obj_a, obj_b):
         ba = obj_a.get_bounds()

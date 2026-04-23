@@ -1,6 +1,4 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# HandMesh — holographic hand overlay (stable, small, pseudo-3D)
-# ─────────────────────────────────────────────────────────────────────────────
+
 
 import numpy as np
 
@@ -66,9 +64,7 @@ class HandMesh:
 
         pts = np.array(pts, dtype=np.float32)
 
-        # ─────────────────────────────
-        # 🔥 SIMPLE + CORRECT SMOOTHING
-        # ─────────────────────────────
+        
         if self._prev is None:
             self._prev = pts
             self.landmarks = pts
@@ -80,16 +76,10 @@ class HandMesh:
         # update AFTER smoothing
         self._prev = smoothed
 
-        # ─────────────────────────────
-        # 🔥 IMPORTANT: NO DISTORTION OPS
-        # ─────────────────────────────
-        # ❌ NO depth scaling
-        # ❌ NO jitter mask
-        # ❌ NO center collapse
+        
 
         self.landmarks = smoothed
 
-        # keep system compatibility
         self.position[:] = 0
         self.rotation[:] = 0
         self.scale[:] = 1

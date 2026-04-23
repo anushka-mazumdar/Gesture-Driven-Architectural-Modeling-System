@@ -24,11 +24,7 @@ def is_pinch(landmarks, threshold=40):
 
 
 def is_index_only(landmarks):
-    """
-    True when only index finger is extended upward,
-    all other fingers folded down.
-    This is the drawing gesture.
-    """
+   
     index_up   = landmarks[INDEX_TIP][1]  < landmarks[INDEX_MCP][1]
     middle_down= landmarks[MIDDLE_TIP][1] > landmarks[MIDDLE_PIP][1]
     ring_down  = landmarks[RING_TIP][1]   > landmarks[RING_MCP][1]
@@ -58,10 +54,7 @@ def is_closed_fist(landmarks):
 
 
 def is_peace_sign(landmarks):
-    """
-    Index and middle extended, ring and pinky folded,
-    thumb not pinching.
-    """
+   
     index_up   = landmarks[INDEX_TIP][1]  < landmarks[INDEX_MCP][1]
     middle_up  = landmarks[MIDDLE_TIP][1] < landmarks[MIDDLE_MCP][1]
     ring_down  = landmarks[RING_TIP][1]   > landmarks[RING_MCP][1]
@@ -74,10 +67,7 @@ def is_peace_sign(landmarks):
 
 
 def get_hand_tilt_vector(landmarks):
-    """
-    Normalised 2D vector from wrist to middle MCP.
-    Represents overall hand tilt direction for free rotation.
-    """
+    
     wx, wy = landmarks[WRIST][0],      landmarks[WRIST][1]
     mx, my = landmarks[MIDDLE_MCP][0], landmarks[MIDDLE_MCP][1]
     dx, dy = mx - wx, my - wy
@@ -88,10 +78,7 @@ def get_hand_tilt_vector(landmarks):
 
 
 def get_peace_spread(landmarks):
-    """
-    Distance between index tip and middle tip.
-    Scale handle in peace sign mode.
-    """
+    
     ix, iy = landmarks[INDEX_TIP][0],  landmarks[INDEX_TIP][1]
     mx, my = landmarks[MIDDLE_TIP][0], landmarks[MIDDLE_TIP][1]
     return math.hypot(ix - mx, iy - my)
