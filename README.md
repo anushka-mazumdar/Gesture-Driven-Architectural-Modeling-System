@@ -175,8 +175,3 @@ The final system reflects a **minimal, performant, and extensible architecture**
 
 ---
 
-## 📜 License
-
-MIT License (or your preferred license)
-
----
