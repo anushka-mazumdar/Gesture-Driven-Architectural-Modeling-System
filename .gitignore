@@ -6,3 +6,6 @@ env.
 *.out
 *.toc
 venv
+docs/
+__pycache__/
+*.pyc

@@ -19,10 +19,10 @@ packaging==26.0
 pillow==12.1.0
 protobuf==3.20.3
 pycparser==3.0
-PyOpenGL==3.1.10
-PyOpenGL-accelerate==3.1.10
+pywebview==6.2.1
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
 scipy==1.17.1
+scikit-learn>=1.4,<2.0
 six==1.17.0
 sounddevice==0.5.5

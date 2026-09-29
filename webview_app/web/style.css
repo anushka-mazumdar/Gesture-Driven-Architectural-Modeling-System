@@ -1,0 +1,50 @@
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #111318;
+  font-family: Segoe UI, Arial, sans-serif;
+  color: #e8eaf0;
+  overflow: hidden;
+}
+
+#scene-container {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+}
+
+#shape-hud {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  font-size: 13px;
+  color: #64dcff;
+  background: rgba(15, 20, 30, 0.55);
+  padding: 4px 10px;
+  border-radius: 6px;
+  pointer-events: none;
+  display: none;
+}
+
+#exit-btn {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 14px;
+  border: 1px solid rgba(255, 90, 90, 0.4);
+  border-radius: 6px;
+  background: rgba(40, 15, 15, 0.75);
+  color: #ff5a5a;
+  cursor: pointer;
+}
+
+#exit-btn:hover {
+  background: rgba(90, 20, 20, 0.9);
+  border-color: #ff5a5a;
+}

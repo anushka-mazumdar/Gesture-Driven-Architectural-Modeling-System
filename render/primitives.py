@@ -2,6 +2,71 @@ import numpy as np
 import math
 
 
+def _signed_area(pts):
+    s = 0.0
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        s += x1 * y2 - x2 * y1
+    return 0.5 * s
+
+
+def _cross(o, a, b):
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+def _point_in_triangle(p, a, b, c):
+    d1 = _cross(a, b, p)
+    d2 = _cross(b, c, p)
+    d3 = _cross(c, a, p)
+    has_neg = d1 < 0 or d2 < 0 or d3 < 0
+    has_pos = d1 > 0 or d2 > 0 or d3 > 0
+    return not (has_neg and has_pos)
+
+
+def _ear_clip_triangulate(pts):
+    """Triangulate a simple 2D polygon (convex or concave) via ear clipping.
+
+    Returns a list of (i, j, k) index triples into `pts`, CCW-wound. Used
+    for extrusion caps instead of a naive centroid fan, which only produces
+    correct geometry for convex outlines — a hand-drawn stroke routinely
+    isn't. Degenerate/self-intersecting input degrades gracefully: clipping
+    stops early and whatever ears were already found are returned.
+    """
+    n = len(pts)
+    if n < 3:
+        return []
+
+    order = list(range(n))
+    if _signed_area(pts) < 0:
+        order.reverse()
+
+    triangles = []
+    guard = 0
+    while len(order) > 3 and guard < n * n + 8:
+        guard += 1
+        clipped = False
+        m = len(order)
+        for i in range(m):
+            ia, ib, ic = order[(i - 1) % m], order[i], order[(i + 1) % m]
+            a, b, c = pts[ia], pts[ib], pts[ic]
+            if _cross(a, b, c) <= 0:   # reflex/degenerate at b — not an ear
+                continue
+            if any(_point_in_triangle(pts[order[j]], a, b, c)
+                   for j in range(m) if order[j] not in (ia, ib, ic)):
+                continue
+            triangles.append((ia, ib, ic))
+            order.pop(i)
+            clipped = True
+            break
+        if not clipped:
+            break   # self-intersecting/degenerate remainder — stop here
+    if len(order) == 3:
+        triangles.append(tuple(order))
+    return triangles
+
+
 
 
 class RibbonMesh:
@@ -227,15 +292,6 @@ class PolygonMesh:
         for (x, y) in pts:
             verts.append([x, y, zb])
 
-        cx = sum(p[0] for p in pts) / n
-        cy = sum(p[1] for p in pts) / n
-
-        front_center = len(verts)
-        verts.append([cx, cy, zf])
-
-        back_center = len(verts)
-        verts.append([cx, cy, zb])
-
         # side walls
         for i in range(n):
             nxt  = (i + 1) % n
@@ -244,15 +300,13 @@ class PolygonMesh:
             idxs += [f0, f1, b0,
                      f1, b1, b0]
 
-        # front cap
-        for i in range(n):
-            nxt = (i + 1) % n
-            idxs += [front_center, i, nxt]
-
-        # back cap
-        for i in range(n):
-            nxt = (i + 1) % n
-            idxs += [back_center, nxt + n, i + n]
+        # caps: ear-clip triangulation handles concave outlines correctly —
+        # a naive centroid fan folds over itself on anything non-convex,
+        # which is most hand-drawn strokes
+        ears = _ear_clip_triangulate(pts)
+        for a, b, c in ears:
+            idxs += [a, b, c]              # front (already CCW)
+            idxs += [c + n, b + n, a + n]  # back (winding reversed)
 
         self.vertices = np.array(verts, dtype=np.float32)
         self.indices  = idxs
