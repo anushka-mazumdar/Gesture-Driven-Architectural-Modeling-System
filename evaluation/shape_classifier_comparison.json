@@ -1,0 +1,305 @@
+{
+  "test_split": "dataset/splits/test",
+  "ml_features": "dataset/ml/test",
+  "sample_count": 61,
+  "feature_dimension": 143,
+  "sample_ids": [
+    "ellipse/sample_0029",
+    "triangle/sample_0053",
+    "hexagon/sample_0039",
+    "circle/sample_0064",
+    "circle/sample_0022",
+    "square/sample_0035",
+    "triangle/sample_0003",
+    "square/sample_0040",
+    "rectangle/sample_0061",
+    "square/sample_0049",
+    "ellipse/sample_0025",
+    "triangle/sample_0029",
+    "square/sample_0024",
+    "hexagon/sample_0015",
+    "ellipse/sample_0009",
+    "triangle/sample_0032",
+    "hexagon/sample_0042",
+    "pentagon/sample_0009",
+    "pentagon/sample_0003",
+    "rectangle/sample_0005",
+    "circle/sample_0025",
+    "circle/sample_0053",
+    "triangle/sample_0018",
+    "square/sample_0054",
+    "hexagon/sample_0014",
+    "rectangle/sample_0033",
+    "ellipse/sample_0001",
+    "pentagon/sample_0041",
+    "circle/sample_0027",
+    "circle/sample_0069",
+    "hexagon/sample_0001",
+    "hexagon/sample_0032",
+    "pentagon/sample_0033",
+    "rectangle/sample_0024",
+    "rectangle/sample_0016",
+    "ellipse/sample_0044",
+    "square/sample_0061",
+    "triangle/sample_0024",
+    "circle/sample_0066",
+    "triangle/sample_0059",
+    "ellipse/sample_0021",
+    "triangle/sample_0049",
+    "square/sample_0062",
+    "square/sample_0033",
+    "pentagon/sample_0006",
+    "ellipse/sample_0045",
+    "hexagon/sample_0027",
+    "square/sample_0008",
+    "rectangle/sample_0034",
+    "pentagon/sample_0032",
+    "rectangle/sample_0038",
+    "circle/sample_0062",
+    "pentagon/sample_0015",
+    "circle/sample_0068",
+    "circle/sample_0012",
+    "rectangle/sample_0022",
+    "circle/sample_0049",
+    "rectangle/sample_0011",
+    "ellipse/sample_0026",
+    "square/sample_0020",
+    "triangle/sample_0023"
+  ],
+  "class_labels": [
+    "circle",
+    "ellipse",
+    "hexagon",
+    "pentagon",
+    "rectangle",
+    "square",
+    "triangle"
+  ],
+  "sample_alignment_verified": true,
+  "random_forest": {
+    "accuracy": 0.9180327868852459,
+    "macro_f1": 0.9172902494331066,
+    "per_class_metrics": {
+      "circle": {
+        "precision": 0.9,
+        "recall": 0.8181818181818182,
+        "f1": 0.8571428571428571,
+        "support": 11
+      },
+      "ellipse": {
+        "precision": 0.8571428571428571,
+        "recall": 0.75,
+        "f1": 0.8,
+        "support": 8
+      },
+      "hexagon": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 7
+      },
+      "pentagon": {
+        "precision": 0.7777777777777778,
+        "recall": 1.0,
+        "f1": 0.875,
+        "support": 7
+      },
+      "rectangle": {
+        "precision": 0.8888888888888888,
+        "recall": 0.8888888888888888,
+        "f1": 0.8888888888888888,
+        "support": 9
+      },
+      "square": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 10
+      },
+      "triangle": {
+        "precision": 1.0,
+        "recall": 1.0,
+        "f1": 1.0,
+        "support": 9
+      }
+    },
+    "confusion_matrix": [
+      [
+        9,
+        1,
+        0,
+        1,
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        6,
+        0,
+        0,
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        7,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        7,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1,
+        8,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        10,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        9
+      ]
+    ]
+  },
+  "deterministic_closed_shape": {
+    "accuracy": 0.4098360655737705,
+    "macro_f1": 0.4256123992966098,
+    "per_class_metrics": {
+      "circle": {
+        "precision": 1.0,
+        "recall": 0.09090909090909091,
+        "f1": 0.16666666666666666,
+        "support": 11
+      },
+      "ellipse": {
+        "precision": 0.0,
+        "recall": 0.0,
+        "f1": 0.0,
+        "support": 8
+      },
+      "hexagon": {
+        "precision": 0.5,
+        "recall": 0.8571428571428571,
+        "f1": 0.631578947368421,
+        "support": 7
+      },
+      "pentagon": {
+        "precision": 0.6363636363636364,
+        "recall": 1.0,
+        "f1": 0.7777777777777778,
+        "support": 7
+      },
+      "rectangle": {
+        "precision": 0.38461538461538464,
+        "recall": 0.5555555555555556,
+        "f1": 0.45454545454545453,
+        "support": 9
+      },
+      "square": {
+        "precision": 1.0,
+        "recall": 0.2,
+        "f1": 0.3333333333333333,
+        "support": 10
+      },
+      "triangle": {
+        "precision": 1.0,
+        "recall": 0.4444444444444444,
+        "f1": 0.6153846153846154,
+        "support": 9
+      }
+    },
+    "confusion_matrix": [
+      [
+        1,
+        2,
+        3,
+        1,
+        2,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        3,
+        1,
+        3,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        6,
+        1,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        7,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        5,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        1,
+        3,
+        2,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        4
+      ]
+    ]
+  }
+}

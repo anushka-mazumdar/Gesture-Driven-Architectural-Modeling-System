@@ -2,6 +2,8 @@ import math
 import time
 from dataclasses import dataclass, field
 
+from shapes.closure_detector import DEFAULT_SNAP_THRESHOLD
+
 
 @dataclass
 class StrokeRecord:
@@ -22,6 +24,7 @@ class StrokeRecord:
     features: object = None       # StrokeFeatures
     shape_class: object = None    # ShapeClass
     recommendation: object = None # MeshRecommendation
+    candidates: object = None     # RecommendationResult (ranked 3D candidates)
 
 
 class StrokeCapture:
@@ -75,7 +78,30 @@ class StrokeCapture:
         self._paused  = True
 
         if len(self.current.points) > self.exit_buffer:
-            keep_s = -self.exit_buffer
+            default_keep = len(self.current.points) - self.exit_buffer
+            keep_s = default_keep
+            # Folding the index finger can add several trailing cursor points
+            # while the drawing gesture is ending. Keep the point from that
+            # short tail that best closes a loop; otherwise retain the usual
+            # exit-buffer trim to avoid adding the finger-fold motion.
+            if self.current.points:
+                first_x, first_y = self.current.points[0]
+                tail_start = max(1, default_keep - 1)
+                tail_end = len(self.current.points)
+                best_index = min(
+                    range(tail_start, tail_end),
+                    key=lambda index: math.hypot(
+                        self.current.points[index][0] - first_x,
+                        self.current.points[index][1] - first_y,
+                    ),
+                )
+                best_gap = math.hypot(
+                    self.current.points[best_index][0] - first_x,
+                    self.current.points[best_index][1] - first_y,
+                )
+                if best_gap <= DEFAULT_SNAP_THRESHOLD:
+                    keep_s = best_index + 1
+
             keep_r = max(1, len(self.current.raw_points) - self.exit_buffer)
             self.current.points      = self.current.points[:keep_s]
             self.current.raw_points  = self.current.raw_points[:keep_r]

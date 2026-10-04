@@ -1,5 +1,6 @@
 import numpy as np
 import math
+from render.snap_anchors import build_snap_anchors
 
 
 def _signed_area(pts):
@@ -92,6 +93,7 @@ class RibbonMesh:
         self.kind        = 'ribbon'
 
         self._build()
+        self.snap_anchors = build_snap_anchors(self.vertices, self.indices)
 
 
     def _build(self):
@@ -269,6 +271,7 @@ class PolygonMesh:
         self.kind        = 'polygon'
 
         self._build()
+        self.snap_anchors = build_snap_anchors(self.vertices, self.indices)
 
 
     def _build(self):

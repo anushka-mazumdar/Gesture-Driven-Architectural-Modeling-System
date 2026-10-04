@@ -1,4 +1,5 @@
 import * as THREE from './vendor/three.module.min.js';
+import { createCandidatePanelController } from './candidate_panel.mjs';
 
 // ---- Scene setup -----------------------------------------------------------
 
@@ -13,7 +14,7 @@ scene.background = new THREE.Color(0x111318);
 // (which can span hundreds of units) land inside the view frustum.
 const camera = new THREE.PerspectiveCamera(
   45,
-  window.innerWidth / window.innerHeight,
+  container.clientWidth / container.clientHeight,
   1,
   3000
 );
@@ -21,7 +22,7 @@ camera.position.set(0, 0, 500);
 camera.lookAt(0, 0, 0);
 
 const renderer = new THREE.WebGLRenderer({ antialias: true });
-renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setSize(container.clientWidth, container.clientHeight);
 renderer.setPixelRatio(window.devicePixelRatio || 1);
 container.appendChild(renderer.domElement);
 
@@ -79,6 +80,72 @@ function buildMeshFromBridgeData(data) {
 
 const liveSceneGroup = new THREE.Group();
 scene.add(liveSceneGroup);
+const drawingPreviewGroup = new THREE.Group();
+scene.add(drawingPreviewGroup);
+const snapPreviewGroup = new THREE.Group();
+scene.add(snapPreviewGroup);
+const snapPreviewHud = document.getElementById('snap-preview-hud');
+
+function clearSnapPreview() {
+  for (const child of snapPreviewGroup.children.slice()) {
+    snapPreviewGroup.remove(child);
+    child.geometry?.dispose();
+    if (Array.isArray(child.material)) child.material.forEach((item) => item.dispose());
+    else child.material?.dispose();
+  }
+}
+
+// This layer is deliberately independent of liveSceneGroup: it visualizes a
+// possible connection but never changes either object's transform.
+window.receiveSnapPreviewFromPython = function (preview) {
+  clearSnapPreview();
+  if (!preview || !Array.isArray(preview.moving_position)
+      || !Array.isArray(preview.target_position)) {
+    if (snapPreviewHud) snapPreviewHud.hidden = true;
+    return;
+  }
+
+  const moving = new THREE.Vector3(...preview.moving_position);
+  const target = new THREE.Vector3(...preview.target_position);
+  for (const [point, radius] of [[moving, 5], [target, 8]]) {
+    const marker = new THREE.Mesh(
+      new THREE.SphereGeometry(radius, 16, 12),
+      new THREE.MeshBasicMaterial({
+        color: 0x64dcff, depthTest: false, depthWrite: false,
+        transparent: true, opacity: 0.92,
+      })
+    );
+    marker.position.copy(point);
+    marker.renderOrder = 30;
+    snapPreviewGroup.add(marker);
+    const halo = new THREE.Mesh(
+      new THREE.SphereGeometry(radius * 1.55, 16, 12),
+      new THREE.MeshBasicMaterial({
+        color: 0x64dcff, wireframe: true, transparent: true,
+        opacity: 0.58, depthTest: false, depthWrite: false,
+      })
+    );
+    halo.position.copy(point);
+    halo.renderOrder = 29;
+    snapPreviewGroup.add(halo);
+  }
+  const connector = new THREE.Line(
+    new THREE.BufferGeometry().setFromPoints([moving, target]),
+    new THREE.LineDashedMaterial({
+      color: 0x8be7ff, dashSize: 5, gapSize: 3,
+      transparent: true, opacity: 0.95, depthTest: false,
+    })
+  );
+  connector.computeLineDistances();
+  connector.renderOrder = 31;
+  snapPreviewGroup.add(connector);
+
+  if (snapPreviewHud) {
+    const kind = typeof preview.kind === 'string' ? preview.kind : 'anchor';
+    snapPreviewHud.textContent = `SNAP PREVIEW · ${kind.toUpperCase()}`;
+    snapPreviewHud.hidden = false;
+  }
+};
 
 // Rebuilt in full on each push — object counts are small.
 window.receiveMeshesFromPython = function (meshList) {
@@ -105,6 +172,122 @@ window.receiveHudFromPython = function (text) {
   } else {
     shapeHud.style.display = 'none';
   }
+};
+
+const drawHint = document.getElementById('draw-hint');
+
+function clearDrawingPreview() {
+  for (const child of drawingPreviewGroup.children.slice()) {
+    drawingPreviewGroup.remove(child);
+    child.geometry.dispose();
+    child.material.dispose();
+  }
+}
+
+window.receiveDrawingStateFromPython = function (state) {
+  if (!state) return;
+  const width = container.clientWidth;
+  const height = container.clientHeight;
+  clearDrawingPreview();
+
+  const points = Array.isArray(state.points) ? state.points : [];
+  if (points.length > 1) {
+    const path = points.map(([x, y]) => new THREE.Vector3(x - 320, 240 - y, 8));
+    const curve = new THREE.CatmullRomCurve3(path);
+    const geometry = new THREE.TubeGeometry(
+      curve, Math.max(12, path.length * 5), 2.4, 8, false
+    );
+    const material = new THREE.MeshBasicMaterial({
+      color: 0x64dcff,
+      transparent: true,
+      opacity: 0.96,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const preview = new THREE.Mesh(geometry, material);
+    preview.renderOrder = 20;
+    drawingPreviewGroup.add(preview);
+  }
+
+  if (Array.isArray(state.cursor) && state.cursor.length === 2) {
+    const x = state.cursor[0] * 640 - 320;
+    const y = 240 - state.cursor[1] * 480;
+    const cursorColor = state.near_object ? 0x64ffc3 : 0xf3f7ff;
+    const ring = new THREE.Mesh(
+      new THREE.RingGeometry(7.5, 9.5, 32),
+      new THREE.MeshBasicMaterial({
+        color: cursorColor, depthTest: false, depthWrite: false,
+      })
+    );
+    ring.position.set(x, y, 12);
+    ring.renderOrder = 21;
+    drawingPreviewGroup.add(ring);
+
+    const dot = new THREE.Mesh(
+      new THREE.CircleGeometry(2, 16),
+      new THREE.MeshBasicMaterial({
+        color: cursorColor, depthTest: false, depthWrite: false,
+      })
+    );
+    dot.position.set(x, y, 12);
+    dot.renderOrder = 21;
+    drawingPreviewGroup.add(dot);
+
+    if (state.delete_progress > 0) {
+      const arcPoints = [];
+      const segments = Math.max(3, Math.ceil(48 * state.delete_progress));
+      for (let index = 0; index <= segments; index += 1) {
+        const angle = -Math.PI / 2 + Math.PI * 2 * state.delete_progress * index / segments;
+        arcPoints.push(new THREE.Vector3(x + Math.cos(angle) * 15,
+          y + Math.sin(angle) * 15, 13));
+      }
+      const arc = new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints(arcPoints),
+        new THREE.LineBasicMaterial({ color: 0xff5a5a, depthTest: false })
+      );
+      arc.renderOrder = 22;
+      drawingPreviewGroup.add(arc);
+    }
+  }
+
+  drawHint.hidden = state.hint_visible === false;
+  drawHint.textContent = state.drawing_enabled
+    ? 'Index finger to draw · Open palm to finish'
+    : 'Open palm to enable sketching · Index finger to draw';
+};
+
+// Display-only candidate list supplied by the shared Recommendation API.
+const candidatePanel = createCandidatePanelController(
+  document.getElementById('candidate-panel'),
+  {
+    onConfirm(candidateId) {
+      const confirmCandidate = window.pywebview?.api?.confirm_candidate;
+      return confirmCandidate ? confirmCandidate(candidateId) : false;
+    },
+    onCancel() {
+      const cancelCandidates = window.pywebview?.api?.cancel_candidate_panel;
+      return cancelCandidates ? cancelCandidates() : false;
+    },
+    onSearch(query) {
+      const searchCandidates = window.pywebview?.api?.search_candidates;
+      return searchCandidates ? searchCandidates(query) : false;
+    },
+  }
+);
+window.receiveCandidatePanelFromPython = function (recommendation) {
+  candidatePanel.update(recommendation);
+};
+window.receiveCandidateHandStateFromPython = function (handState) {
+  if (!handState) {
+    candidatePanel.updateHandInteraction(null);
+    return;
+  }
+  const sceneBounds = container.getBoundingClientRect();
+  candidatePanel.updateHandInteraction({
+    x: sceneBounds.left + handState.x * sceneBounds.width,
+    y: sceneBounds.top + handState.y * sceneBounds.height,
+    closed_fist: handState.closed_fist,
+  });
 };
 
 // ---- Tracked-hand overlay --------------------------------------------------
@@ -227,6 +410,12 @@ document.getElementById('exit-btn').addEventListener('click', () => {
   }
 });
 
+window.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') {
+    window.pywebview?.api?.exit?.();
+  }
+});
+
 // ---- Render loop -----------------------------------------------------------
 
 function animate() {
@@ -236,7 +425,7 @@ function animate() {
 animate();
 
 window.addEventListener('resize', () => {
-  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.aspect = container.clientWidth / container.clientHeight;
   camera.updateProjectionMatrix();
-  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setSize(container.clientWidth, container.clientHeight);
 });

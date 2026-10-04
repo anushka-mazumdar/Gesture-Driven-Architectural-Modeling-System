@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from shapes.recommendation_api import get_recommendations
+
 
 @dataclass
 class MeshRecommendation:
@@ -29,7 +31,7 @@ def _open_thickness(length):
 # shape label -> mesh family  (recommendation mapping)
 _CLOSED_FAMILY  = {"circle", "ellipse", "triangle", "square", "rectangle",
                    "pentagon", "hexagon", "polygon"}
-_OPEN_FAMILY    = {"line", "curve", "arc", "polyline"}
+_OPEN_FAMILY    = {"straight_line", "polyline", "arc", "curve", "freeform_path"}
 
 
 class ShapeRecommender:
@@ -58,3 +60,7 @@ class ShapeRecommender:
             )
         # unknown label — conservative default to a ribbon
         return MeshRecommendation(kind="ribbon", thickness=20.0, extrude_depth=20.0)
+
+    def recommend_candidates(self, shape_class, max_candidates=None):
+        """Ranked 3D candidates for a classified stroke (shared API)."""
+        return get_recommendations(shape_class, max_candidates=max_candidates)

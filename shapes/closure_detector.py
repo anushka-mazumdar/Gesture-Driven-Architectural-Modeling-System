@@ -1,6 +1,9 @@
 import math
 
 
+DEFAULT_SNAP_THRESHOLD = 80
+
+
 class ClosureDetector:
     """Stage: open/closed determination + corner-snapping.
 
@@ -8,7 +11,9 @@ class ClosureDetector:
     is small enough to "snap" the loop shut.
     """
 
-    def __init__(self, snap_threshold=50):
+    # Screen-space pixels. A little tolerance is needed because the capture
+    # layer smooths/decimates points and trims the finger-lift tail.
+    def __init__(self, snap_threshold=DEFAULT_SNAP_THRESHOLD):
         self.snap_threshold = snap_threshold
 
     def detect(self, points):

@@ -1,10 +1,7 @@
-import cv2
 import math
-import numpy as np
 import threading
 import time
 
-from sketch.sketch_panel          import SketchPanel
 from vision.hand_tracking         import HandTracker
 from vision.landmark_utils        import (
     is_pinch, is_open_palm, is_closed_fist,
@@ -17,6 +14,7 @@ from gestures.gesture_motion      import GestureMotion, PinchScale
 from gestures.gesture_timer       import GestureTimer
 from gestures.gesture_cooldown    import GestureCooldown
 from gestures.gesture_state       import GestureStateMachine
+from gestures.candidate_swipe_gate import CandidateSwipeGate
 from shapes.stroke_capture     import StrokeCapture
 from shapes.stroke_pipeline    import StrokePipeline
 from shapes.shape_3d_factory   import Shape3DFactory
@@ -24,7 +22,10 @@ from render.threejs_renderer      import ThreeJSRenderer
 from interaction.object_selection import ObjectSelection
 from interaction.manipulation     import Manipulation
 from interaction.snapping         import Snapping
+from interaction.recommendation_mode import RecommendationInteractionMode
+from interaction.candidate_placement import CandidatePlacement
 from render.hand_mesh              import HandMesh
+from webview_app.application_window import create_application_window
 
 INDEX_TIP = 8
 THUMB_TIP = 4
@@ -32,7 +33,7 @@ WRIST     = 0
 PANEL_W   = 640
 PANEL_H   = 480
 
-# Set by _launch_threejs_and_run's window-closing handler so run_app's
+# Set by _launch_application_and_run's window-closing handler so run_app's
 # background thread stops (and releases the webcam) instead of being
 # killed abruptly when the daemon thread dies with the process.
 _stop_event = threading.Event()
@@ -52,10 +53,13 @@ renderer.add_object(hand_mesh)
 stabilizer       = GestureStabilizer(buffer_size=6)
 cooldown         = GestureCooldown(cooldown_time=0.6)
 motion           = GestureMotion()
+candidate_swipe_gate = CandidateSwipeGate(settle_seconds=0.12, cooldown_seconds=0.6)
+recommendation_mode = RecommendationInteractionMode(renderer, candidate_swipe_gate)
+candidate_placement = CandidatePlacement(renderer, selection=obj_selection)
 scale_detector   = PinchScale()
 timer            = GestureTimer()
 state_machine    = GestureStateMachine()
-panel            = SketchPanel(width=PANEL_W, height=PANEL_H)
+drawing_enabled = False
 
 gesture           = None
 state             = None
@@ -90,6 +94,8 @@ def exit_manipulation():
     global manipulating, scale_only_mode
     selected = obj_selection.get_selected()
     snapping.cancel_snap(renderer.objects)
+    snapping.clear_preview()
+    renderer.set_snap_preview(None)
     manipulation.stop_move()
     manipulation.stop_rotate()
     manipulation.stop_scale()
@@ -101,27 +107,135 @@ def exit_manipulation():
 def try_convert_stroke():
     global converting, convert_start
     record = capture.finish()
-    panel.finish_stroke()
     if record:
         result = pipeline.convert(record)
+        renderer.set_candidate_recommendation(
+            result.candidates if result is not None else None
+        )
         mesh = result.mesh if result is not None else None
         if mesh:
             mesh.shape_class = result.shape_class
             renderer.add_object(mesh)
-        panel.stroke_layer[:] = 0
+            candidate_placement.begin(result.record, mesh)
+        else:
+            candidate_placement.cancel_pending()
         converting    = True
         convert_start = time.time()
 
 
-def draw_cursor(display, x, y, near_object=False, delete_progress=0.0):
-    color  = (0, 255, 150) if near_object else (200, 200, 200)
-    radius = 12 if near_object else 8
-    cv2.circle(display, (x, y), radius, color, 2)
-    cv2.circle(display, (x, y), 2,      color, -1)
-    if delete_progress > 0:
-        angle = int(360 * delete_progress)
-        cv2.ellipse(display, (x, y), (16, 16),
-                    -90, 0, angle, (0, 60, 220), 2)
+def process_normal_hand(landmarks, x, y, tilt, swipe, hand_speed,
+                        navigation_swipe_in_progress=False):
+    """Run the existing draw/manipulation/delete controls in NORMAL mode."""
+    global gesture, pinch_lost_frames, delete_candidate, delete_start_time
+    global drawing_enabled
+
+    pinching = is_pinch(landmarks)
+    index_only = is_index_only(landmarks) and not pinching
+    peace = is_peace_sign(landmarks)
+    fist = is_closed_fist(landmarks)
+    open_palm = is_open_palm(landmarks)
+
+    raw_gesture = None
+    if pinching:
+        raw_gesture = "PINCH"
+    elif fist:
+        raw_gesture = "FIST"
+    elif open_palm:
+        raw_gesture = "OPEN PALM"
+    elif peace:
+        raw_gesture = "PEACE"
+    elif index_only:
+        raw_gesture = "INDEX"
+
+    stable_gesture = stabilizer.update(raw_gesture)
+    gesture = cooldown.update(stable_gesture)
+
+    if open_palm:
+        if timer.check("OPEN PALM", 1.5):
+            drawing_enabled = True
+        if manipulating:
+            exit_manipulation()
+
+    hovered_obj = get_object_at(x, y)
+    near_object = hovered_obj is not None
+    delete_progress = 0.0
+
+    if (fist and hovered_obj is not None and not manipulating
+            and not navigation_swipe_in_progress):
+        if delete_candidate is not hovered_obj:
+            delete_candidate = hovered_obj
+            delete_start_time = time.time()
+
+        elapsed = time.time() - delete_start_time
+        delete_progress = min(elapsed / DELETE_HOLD, 1.0)
+        if elapsed >= DELETE_HOLD:
+            if getattr(delete_candidate, 'kind', None) != 'hand':
+                renderer.remove_object(delete_candidate)
+            delete_candidate = None
+            delete_start_time = None
+    else:
+        delete_candidate = None
+        delete_start_time = None
+
+    if manipulating:
+        if open_palm:
+            exit_manipulation()
+        elif peace:
+            pinch_lost_frames = 0
+            if not manipulation.in_scale_mode:
+                manipulation._prev_spread = None
+                manipulation.in_scale_mode = True
+            manipulation.update_move((x, y), PANEL_W, PANEL_H)
+            manipulation.update_rotate_free(tilt)
+            manipulation.update_scale_peace(get_peace_spread(landmarks))
+            selected = obj_selection.get_selected()
+            if hand_speed > Snapping.DETACH_SPEED and selected:
+                snapping.detach(selected)
+        else:
+            pinch_lost_frames += 1
+            if pinch_lost_frames >= PINCH_EXIT_FRAMES:
+                pinch_lost_frames = 0
+                exit_manipulation()
+
+        if swipe in ('UP', 'DOWN'):
+            manipulation.update_depth(swipe)
+
+    elif index_only and drawing_enabled and not converting:
+        if capture.is_paused():
+            capture.resume_stroke()
+        elif not capture.is_drawing():
+            renderer.set_candidate_recommendation(None)
+            candidate_placement.cancel_pending()
+            capture.start_stroke()
+        capture.add_point((x, y))
+
+    elif (drawing_enabled and not converting and not fist and not index_only
+            and not navigation_swipe_in_progress):
+        if peace:
+            hit = get_object_at(x, y)
+            if hit:
+                obj_selection.selected_object = hit
+                hit.selected = True
+                enter_manipulation(hit, scale_only=False)
+
+    # Anchor preview is display-only and is evaluated after the normal
+    # manipulation updates, so it reflects current world transforms.
+    if manipulating and peace:
+        preview = snapping.preview_nearest_anchors(
+            manipulation.active_object, renderer.objects
+        )
+        renderer.set_snap_preview(preview)
+    else:
+        snapping.clear_preview()
+        renderer.set_snap_preview(None)
+
+    if not index_only and not manipulating and drawing_enabled and not converting:
+        if capture.is_drawing():
+            capture.pause_stroke()
+        elif capture.is_paused() and capture.pause_expired() and capture.has_points():
+            try_convert_stroke()
+
+    return near_object, delete_progress
 
 
 def get_object_at(x, y, threshold=120):
@@ -152,7 +266,7 @@ def run_app():
     """The application loop — gesture detection, stroke processing,
     shape generation and manipulation logic. Runs on a background thread
     while pywebview owns the main thread's GUI loop; _stop_event lets the
-    window-closing handler shut it down cleanly (see _launch_threejs_and_run).
+    window-closing handler shut it down cleanly.
     """
     global gesture, state, prev_x, prev_y, hand_speed
     global converting, convert_start, manipulating, scale_only_mode
@@ -167,8 +281,7 @@ def run_app():
 
         tilt            = (0.0, 0.0)
         swipe           = None
-        cursor_x        = prev_x or PANEL_W // 2
-        cursor_y        = prev_y or PANEL_H // 2
+        cursor          = None
         near_object     = False
         delete_progress = 0.0
 
@@ -191,232 +304,77 @@ def run_app():
             x = int(prev_x * SMOOTH + x * (1 - SMOOTH))
             y = int(prev_y * SMOOTH + y * (1 - SMOOTH))
             prev_x, prev_y = x, y
-            cursor_x, cursor_y = x, y
+            cursor = (x / PANEL_W, y / PANEL_H)
 
             tilt  = get_hand_tilt_vector(landmarks)
             swipe = motion.detect_swipe(landmarks)
-
-            pinching   = is_pinch(landmarks)
-            index_only = is_index_only(landmarks) and not pinching
-            peace      = is_peace_sign(landmarks)
-            fist       = is_closed_fist(landmarks)
-            open_palm  = is_open_palm(landmarks)
-
-            raw_gesture = None
-            if pinching:
-                raw_gesture = "PINCH"
-            elif fist:
-                raw_gesture = "FIST"
-            elif open_palm:
-                raw_gesture = "OPEN PALM"
-            elif peace:
-                raw_gesture = "PEACE"
-            elif index_only:
-                raw_gesture = "INDEX"
-
-            stable_gesture = stabilizer.update(raw_gesture)
-            gesture        = cooldown.update(stable_gesture)
-
             hand_mesh.update_from_landmarks(landmarks, PANEL_W, PANEL_H)
-
-            if open_palm:
-                if timer.check("OPEN PALM", 1.5):
-                    panel.active = True
-                if manipulating:
-                    exit_manipulation()
-
-            hovered_obj = get_object_at(x, y)
-            near_object = hovered_obj is not None
-
-
-            if fist and hovered_obj is not None and not manipulating:
-
-                if delete_candidate is not hovered_obj:
-                    delete_candidate  = hovered_obj
-                    delete_start_time = time.time()
-
-                elapsed         = time.time() - delete_start_time
-                delete_progress = min(elapsed / DELETE_HOLD, 1.0)
-
-                if elapsed >= DELETE_HOLD:
-                    if getattr(delete_candidate, 'kind', None) != 'hand':
-                        renderer.remove_object(delete_candidate)
-
-                    delete_candidate  = None
-                    delete_start_time = None
-
-            else:
-                delete_candidate  = None
+            recommendation_mode_active = recommendation_mode.update(swipe)
+            if recommendation_mode_active:
+                # RECOMMENDATION owns all hand input; no gesture/action code
+                # for drawing, selecting, moving, deleting, or depth runs here.
+                renderer.set_candidate_hand_state(
+                    x / PANEL_W, y / PANEL_H, is_closed_fist(landmarks)
+                )
+                snapping.clear_preview()
+                renderer.set_snap_preview(None)
+                delete_candidate = None
                 delete_start_time = None
-
-
-            if manipulating:
-
-                if open_palm:
-                    exit_manipulation()
-
-                elif peace:
-                    pinch_lost_frames = 0
-
-                    # enter scale mode once — does NOT reset move pos
-                    if not manipulation.in_scale_mode:
-                        manipulation._prev_spread = None   # reset spread only
-                        manipulation.in_scale_mode = True
-
-                    # MOVE — hand position drives object X-Y
-                    manipulation.update_move((x, y), PANEL_W, PANEL_H)
-
-                    # ROTATE — wrist tilt drives rotation
-                    manipulation.update_rotate_free(tilt)
-
-                    # SCALE — spread between index and middle tips
-                    spread = get_peace_spread(landmarks)
-                    manipulation.update_scale_peace(spread)
-
-                    selected = obj_selection.get_selected()
-
-                    if hand_speed > Snapping.DETACH_SPEED and selected:
-                        snapping.detach(selected)
-
-                else:
-                    pinch_lost_frames += 1
-                    if pinch_lost_frames >= PINCH_EXIT_FRAMES:
-                        pinch_lost_frames = 0
-                        exit_manipulation()
-
-                if swipe in ('UP', 'DOWN'):
-                    manipulation.update_depth(swipe)
-
-
-            elif index_only and panel.active and not converting:
-
-                if capture.is_paused():
-                    capture.resume_stroke()
-                elif not capture.is_drawing():
-                    capture.start_stroke()
-
-                panel.draw_stroke((x, y))
-                capture.add_point((x, y))
-
-
-            elif panel.active and not converting and not fist and not index_only:
-
-                if peace:
-                    hit = get_object_at(x, y)
-                    if hit:
-                        obj_selection.selected_object = hit
-                        hit.selected = True
-                        enter_manipulation(hit, scale_only=False)
-
-
-            if not index_only and not manipulating and panel.active and not converting:
-
-                if capture.is_drawing():
-                    capture.pause_stroke()
-                    panel.finish_stroke()
-
-                elif capture.is_paused():
-                    if capture.pause_expired():
-                        if capture.has_points():
-                            try_convert_stroke()
+                pinch_lost_frames = 0
+                near_object = False
+                delete_progress = 0.0
+            else:
+                renderer.set_candidate_hand_state(None)
+                near_object, delete_progress = process_normal_hand(
+                    landmarks, x, y, tilt, swipe, hand_speed
+                )
 
         else:
-            # no hand detected
-            if capture.is_paused() and capture.pause_expired():
+            recommendation_mode_active = recommendation_mode.update(None)
+            renderer.set_candidate_hand_state(None)
+            snapping.clear_preview()
+            renderer.set_snap_preview(None)
+            # A visible recommendation panel consumes input even while the
+            # hand tracker temporarily loses landmarks.
+            if (not recommendation_mode_active and capture.is_paused()
+                    and capture.pause_expired()):
                 if capture.has_points():
                     try_convert_stroke()
 
-        display = panel.render(frame)
-
-        display = renderer.render(display)
-
-        draw_cursor(display, cursor_x, cursor_y, near_object, delete_progress)
-
         if converting:
             elapsed = time.time() - convert_start
-            if elapsed < CONVERT_DURATION:
-                overlay = display.copy()
-                cv2.rectangle(overlay, (0, 0), (PANEL_W, PANEL_H),
-                              (20, 10, 10), -1)
-                display = cv2.addWeighted(overlay, 0.35, display, 0.65, 0)
-                progress = elapsed / CONVERT_DURATION
-                bar_w    = int(PANEL_W * 0.4)
-                bar_x    = (PANEL_W - bar_w) // 2
-                bar_y    = PANEL_H // 2 + 30
-                cv2.rectangle(display, (bar_x, bar_y),
-                              (bar_x + bar_w, bar_y + 8), (60, 60, 80), -1)
-                cv2.rectangle(display, (bar_x, bar_y),
-                              (bar_x + int(bar_w * progress), bar_y + 8),
-                              (100, 200, 255), -1)
-                cv2.putText(display, "Converting to 3D...",
-                            (PANEL_W // 2 - 110, PANEL_H // 2),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.65,
-                            (100, 200, 255), 2)
-            else:
+            if elapsed >= CONVERT_DURATION:
                 converting = False
 
-        if panel.active:
-            if manipulating:
-                mode = "MANIPULATING"
-            elif capture.is_drawing():
-                mode = "DRAWING"
-            elif capture.is_paused():
-                mode = "PAUSED..."
-            else:
-                mode = "READY"
-            cv2.putText(display, f"State: {mode}", (12, 24),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 180), 1)
+        stroke_points = (capture.get_current()
+                         if capture.is_drawing() or capture.is_paused() else [])
+        renderer.set_drawing_state(
+            points=stroke_points,
+            drawing_enabled=drawing_enabled and not recommendation_mode_active,
+            cursor=cursor,
+            near_object=near_object,
+            delete_progress=delete_progress,
+            hint_visible=not recommendation_mode_active,
+        )
 
-            selected = obj_selection.get_selected()
-            shape_class = getattr(selected, 'shape_class', None) if selected else None
-            hud_text = (f"Shape: {shape_class.kind} ({shape_class.confidence:.0%})"
-                        if shape_class is not None else None)
-            renderer.set_hud_text(hud_text)
-
-        if delete_progress > 0:
-            cv2.putText(display, "Deleting...",
-                        (cursor_x - 35, cursor_y - 22),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 60, 220), 1)
-
-        if snapping.has_candidate():
-            cv2.putText(display, "Snap ready — release to lock",
-                        (PANEL_W // 2 - 115, 48),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.42, (0, 255, 180), 1)
-
-        if manipulating:
-            cv2.putText(display,
-                        "Peace:Move+Rotate+Scale  |  Swipe U/D:Depth  |  Palm:Exit  |  Yank:Detach",
-                        (12, PANEL_H - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.30, (100, 200, 255), 1)
-        elif panel.active and not converting:
-            cv2.putText(display,
-                        "Index:Draw  |  Peace on shape:Select  |  Fist:Delete",
-                        (12, PANEL_H - 12),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.32, (150, 150, 180), 1)
-
-        cv2.imshow("2D to 3D", display)
-
-        key = cv2.waitKey(1) & 0xFF
-        if key == 27:
-            break
+        selected = obj_selection.get_selected()
+        shape_class = getattr(selected, 'shape_class', None) if selected else None
+        renderer.set_hud_text(
+            f"Shape: {shape_class.kind} ({shape_class.confidence:.0%})"
+            if drawing_enabled and shape_class is not None else None
+        )
+        renderer.render()
 
     tracker.release()
-    cv2.destroyAllWindows()
 
 
-def _launch_threejs_and_run():
-    """Open the Three.js/WebView scene (web assets owned by the
-    webview_app package), attach it to the ThreeJSRenderer, and run the
-    application loop on a background thread while pywebview owns the
-    main thread's GUI loop.
+def _launch_application_and_run():
+    """Open the combined drawing/Three.js WebView and run the Python
+    camera and gesture loop on a background thread.
     """
     import webview
-    from webview_app import WEB_DIR, INDEX_HTML
-
     class _Api:
-        """JS-callable surface: lets the web page's Exit button close
-        the window (scene objects still arrive via push — see
-        render/threejs_renderer.py._sync_scene)."""
+        """JS-callable surface for the single application window."""
 
         def __init__(self):
             self._window = None
@@ -425,30 +383,33 @@ def _launch_threejs_and_run():
             if self._window is not None:
                 self._window.destroy()
 
+        def confirm_candidate(self, candidate_id):
+            return candidate_placement.confirm(candidate_id)
+
+        def search_candidates(self, query):
+            return renderer.set_candidate_search_query(query)
+
+        def cancel_candidate_panel(self):
+            candidate_placement.cancel()
+            return True
+
     api = _Api()
 
-    window = webview.create_window(
-        "Gesture Modeling - Live 3D (Three.js backend)",
-        INDEX_HTML,
-        js_api=api,
-        width=1000,
-        height=700,
-        resizable=True,
+    window = create_application_window(
+        webview, api, renderer, _stop_event.set
     )
     api._window = window
-    renderer.attach_window(window)
-    window.events.closing += lambda: _stop_event.set()
 
     worker = threading.Thread(target=run_app, daemon=True)
     worker.start()
     webview.start(http_server=True, debug=False)
 
     # webview.start() returns once the window closes; give run_app's
-    # loop a moment to see _stop_event and release the webcam/OpenCV
-    # window cleanly before the process exits.
+    # loop a moment to see _stop_event and release the webcam cleanly before
+    # the process exits.
     _stop_event.set()
     worker.join(timeout=2.0)
 
 
 if __name__ == "__main__":
-    _launch_threejs_and_run()
+    _launch_application_and_run()

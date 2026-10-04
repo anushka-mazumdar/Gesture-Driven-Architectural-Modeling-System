@@ -1,5 +1,8 @@
 import math
-from dataclasses import dataclass
+import json
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from shapes.stroke_analysis import simplify_to_count
 
@@ -8,12 +11,14 @@ from shapes.stroke_analysis import simplify_to_count
 class ShapeClass:
     """Result of stroke classification: a 2D shape label + confidence.
 
-    Labels stay geometric (line/curve/circle/ellipse/triangle/square/
+    Labels stay geometric (straight_line/polyline/arc/curve/freeform_path and
+    circle/ellipse/triangle/square/
     rectangle/pentagon/hexagon/"<n>-gon"/polygon); mapping a label onto a
     concrete 3D build recipe is the recommender's job.
     """
     kind: str = "polygon"
     confidence: float = 0.0
+    probabilities: dict = field(default_factory=dict)
 
 
 # curvature-based candidates (circle / ellipse) -----------------------------
@@ -79,7 +84,7 @@ _POLYGON_FLOOR = 0.35
 # corners" from "an arc, just coarsely sampled" — polyline and arc are left
 # to compete on confidence instead of gating each other out, mirroring how
 # roundness overrides raw corner count for the closed family.
-_LINE_STRAIGHT_MIN  = 0.92   # <=1 interior corner + straightness >= this -> line
+_LINE_STRAIGHT_MIN  = 0.92   # <=1 interior corner + straightness >= this -> straight_line
 _LINE_STRAIGHT_SOFT = 0.80   # softer bar, still fires but at reduced confidence
 _LINE_MAX_VERTICES  = 3      # endpoints + at most one (near-collinear) interior point
 
@@ -98,16 +103,29 @@ _ARC_MIN_SPAN = 15.0   # degrees; below this the curvature is negligible/
 _ARC_MAX_SPAN = 340.0  # near-full-loop opens read as "curve" instead of "arc"
 
 _FREEFORM_FLOOR = 0.30  # safe fallback: always available, like _POLYGON_FLOOR
+_CURVE_MIN_BEND = 0.08   # below this, a smooth stroke is effectively straight
+_FREEFORM_MIN_CHAOS = 0.55  # sharp turns / irregular segments above this -> freeform
+
+# Confidence/ambiguity policy. Closed ML predictions require both a strong
+# top probability and separation from the runner-up; deterministic evidence
+# uses its score and (for open strokes) the winning-vs-runner-up score gap.
+_CLOSED_ML_MIN_CONFIDENCE = 0.55
+_CLOSED_ML_MIN_MARGIN = 0.10
+_CLOSED_FALLBACK_MIN_CONFIDENCE = 0.55
+_OPEN_MIN_CONFIDENCE = 0.60
+_OPEN_MIN_MARGIN = 0.04
 
 
 class StrokeClassifier:
     """Stage: classify a stroke into a 2D shape family.
 
-    Deterministic feature heuristics (no ML), so the same stroke always
-    yields the same label. Uses StrokeFeatures + the closure flag produced
-    by upstream stages.
+    Closed strokes use the trained Random Forest for its supported classes
+    when its model and feature metadata are valid. Existing deterministic
+    closed-shape rules remain the fallback and handle labels outside the
+    model's class set. Open strokes use deterministic geometric thresholds.
 
-    Closed shapes are scored against every applicable candidate (circle,
+    The deterministic fallback scores closed shapes against every applicable
+    candidate (circle,
     ellipse, square, rectangle, triangle, pentagon, hexagon, a named
     "<n>-gon" for larger regular polygons, and a generic "polygon" catch-
     all for anything irregular) and the highest-confidence candidate wins —
@@ -116,10 +134,126 @@ class StrokeClassifier:
     family fall back to the old "polygon" behaviour and still build fine.
     """
 
+    def __init__(self, model_path=None, metadata_path=None, use_ml_model=True):
+        default_model = (Path(__file__).resolve().parent.parent / "models" /
+                         "shape_random_forest_final.joblib")
+        self.model_path = Path(model_path) if model_path is not None else default_model
+        self.metadata_path = (Path(metadata_path) if metadata_path is not None
+                              else self.model_path.with_name(
+                                  self.model_path.stem + "_metadata.json"))
+        self.use_ml_model = use_ml_model
+        self._ml_model = None
+        self._ml_feature_extractor = None
+        self._ml_class_labels = ()
+        self._ml_load_checked = False
+        self._ml_fallback_logged = False
+
     def classify(self, points, features, closed):
         if closed:
-            return self._classify_closed(features)
-        return self._classify_open(points, features)
+            try:
+                fallback = self._classify_closed(features)
+                # Preserve explicit larger N-gon classifications. A generic
+                # polygon with 3-6 corners may still be a supported shape
+                # (for example, a rotated square), so let the model classify it.
+                corner_count, _ = _polygon_signature(features.approx_points)
+                if (fallback.kind.endswith("-gon")
+                        or (fallback.kind == "polygon"
+                            and corner_count not in (3, 4, 5, 6))):
+                    return _confidence_decision(
+                        fallback, _CLOSED_FALLBACK_MIN_CONFIDENCE)
+                predicted = self._classify_closed_ml(features)
+                if predicted is not None:
+                    return _confidence_decision(
+                        predicted, _CLOSED_ML_MIN_CONFIDENCE,
+                        _CLOSED_ML_MIN_MARGIN,
+                    )
+                return _confidence_decision(
+                    fallback, _CLOSED_FALLBACK_MIN_CONFIDENCE)
+            except Exception:
+                return ShapeClass("uncertain", 0.0)
+        try:
+            return self._classify_open(points, features)
+        except Exception:
+            # Malformed or non-finite open input must still produce a stable
+            # API result; it must not affect the closed-shape model path.
+            return ShapeClass("uncertain", 0.0)
+
+    def _load_ml_model(self):
+        """Lazily load the model and validate its saved feature/class metadata."""
+        if self._ml_load_checked:
+            return self._ml_model
+        self._ml_load_checked = True
+        if not self.use_ml_model:
+            return None
+
+        try:
+            from tools.ml_features import FEATURE_COUNT, FEATURE_NAMES, extract_features
+            import joblib
+
+            with self.metadata_path.open("r", encoding="utf-8") as metadata_file:
+                metadata = json.load(metadata_file)
+            if (metadata.get("feature_dimension") != FEATURE_COUNT
+                    or FEATURE_COUNT != 143
+                    or metadata.get("feature_names") != list(FEATURE_NAMES)):
+                raise ValueError("Random Forest feature metadata/order mismatch")
+
+            model = joblib.load(self.model_path)
+            if getattr(model, "n_features_in_", None) != FEATURE_COUNT:
+                raise ValueError("Random Forest feature dimension mismatch")
+
+            model_labels = tuple(str(label) for label in model.classes_)
+            metadata_labels = metadata.get("class_labels")
+            expected_labels = {
+                "circle", "ellipse", "triangle", "square", "rectangle",
+                "pentagon", "hexagon",
+            }
+            if (not isinstance(metadata_labels, list)
+                    or set(metadata_labels) != expected_labels
+                    or set(metadata_labels) != set(model_labels)
+                    or len(metadata_labels) != len(model_labels)):
+                raise ValueError("Random Forest class metadata mismatch")
+
+            self._ml_model = model
+            self._ml_feature_extractor = extract_features
+            self._ml_class_labels = model_labels
+        except Exception as error:
+            self._log_ml_fallback(f"could not load/validate model: {error}")
+        return self._ml_model
+
+    def _classify_closed_ml(self, features):
+        model = self._load_ml_model()
+        if model is None:
+            return None
+        try:
+            vector = self._ml_feature_extractor(features.points)
+            probability_row = model.predict_proba([vector])[0]
+            probabilities = [float(value) for value in probability_row]
+            if (len(probabilities) != len(self._ml_class_labels)
+                    or not all(math.isfinite(value) and 0.0 <= value <= 1.0
+                               for value in probabilities)):
+                raise ValueError("Invalid Random Forest probabilities")
+
+            predicted_index = max(range(len(probabilities)), key=probabilities.__getitem__)
+            probability_map = {
+                label: probability
+                for label, probability in zip(self._ml_class_labels, probabilities)
+            }
+            predicted_label = self._ml_class_labels[predicted_index]
+            return ShapeClass(
+                predicted_label,
+                probabilities[predicted_index],
+                probability_map,
+            )
+        except Exception as error:
+            self._log_ml_fallback(f"feature extraction/inference failed: {error}")
+            return None
+
+    def _log_ml_fallback(self, message):
+        if not self._ml_fallback_logged:
+            logging.getLogger(__name__).warning(
+                "Using deterministic closed-shape classifier fallback: %s", message
+            )
+            self._ml_fallback_logged = True
 
     def _classify_closed(self, features):
         # Geometry must be a real (non-degenerate) loop to trust the ratio
@@ -205,7 +339,7 @@ class StrokeClassifier:
         return ShapeClass(label, candidates[label])
 
     def _classify_open(self, points, features):
-        """Open-family candidates: line, polyline, arc, curve, freeform path.
+        """Open-family candidates: straight_line, polyline, arc, curve, freeform_path.
 
         The corner-count/regularity signals come from features.approx_points
         (the noise-robust, VW-simplified, normalized corner list); the
@@ -214,10 +348,10 @@ class StrokeClassifier:
         too sparse for a meaningful fit — while the original capture is
         usually dense enough. Every applicable candidate is scored and the
         highest-confidence one wins, same voting scheme as the closed
-        family — "freeform path" is the always-available safe fallback.
+        family — "freeform_path" is the always-available safe fallback.
         """
-        if features.length <= 1e-9:
-            return ShapeClass("freeform path", _FREEFORM_FLOOR)
+        if features.length <= 1e-9 or not math.isfinite(features.length):
+            return ShapeClass("uncertain", 0.0)
 
         pts = features.approx_points
         n, seg_regularity = _open_signature(pts)
@@ -227,11 +361,11 @@ class StrokeClassifier:
 
         candidates = {}
 
-        # -- line: very straight, essentially no interior structure --------
+        # -- straight_line: very straight, essentially no interior structure
         if n <= _LINE_MAX_VERTICES and features.straightness >= _LINE_STRAIGHT_MIN:
-            candidates["line"] = _clamp(0.6 + 0.4 * features.straightness, low=0.9)
+            candidates["straight_line"] = _clamp(0.6 + 0.4 * features.straightness, low=0.9)
         elif n <= _LINE_MAX_VERTICES and features.straightness >= _LINE_STRAIGHT_SOFT:
-            candidates["line"] = _clamp(0.4 + 0.3 * features.straightness, low=0.4)
+            candidates["straight_line"] = _clamp(0.4 + 0.3 * features.straightness, low=0.4)
 
         # -- polyline: at least one real (sharp) corner, and few enough of
         # them to read as deliberate. A coarsely-simplified arc can *also*
@@ -251,11 +385,15 @@ class StrokeClassifier:
                 candidates["arc"] = _clamp(
                     0.55 + 0.45 * (1.0 - rel_error / _ARC_FIT_MAX), low=0.55)
 
-        # -- curve: generic smooth fallback — no real corner, and no clean
-        # arc reading either ---------------------------------------------
-        if n_sharp == 0 and "arc" not in candidates:
-            curviness = 1.0 - features.straightness
-            candidates["curve"] = _clamp(0.3 + 0.4 * curviness, low=0.3)
+        # -- curve: generic smooth bend, including S-curves which are not
+        # well represented by a single circle -----------------------------
+        curviness = 1.0 - features.straightness
+        smooth_turn_fraction = _smooth_turn_fraction(features.points)
+        if (curviness >= _CURVE_MIN_BEND
+                and smooth_turn_fraction >= 0.40
+                and features.straightness < _LINE_STRAIGHT_MIN):
+            candidates["curve"] = _clamp(
+                0.70 + 0.25 * smooth_turn_fraction, low=0.70)
 
         # -- freeform path: always a safe fallback, grows with how chaotic
         # the corner list is (many real corners relative to how many
@@ -263,11 +401,29 @@ class StrokeClassifier:
         # implausibly high corner count) ------------------------------
         chaos = (n_sharp / interior) if interior else 0.0
         overflow = 0.05 * max(0, n - _POLYLINE_MAX_VERTICES)
-        candidates["freeform path"] = _clamp(
+        candidates["freeform_path"] = _clamp(
             _FREEFORM_FLOOR + 0.2 * chaos + 0.15 * (1.0 - seg_regularity) + overflow)
 
+        # A deliberately kinked or highly irregular path should not be
+        # outvoted by a low-confidence smooth-shape candidate. The threshold
+        # is based on sharp-turn density and segment-length regularity.
+        if (chaos >= _FREEFORM_MIN_CHAOS
+                and seg_regularity < 0.65
+                and n > _POLYLINE_MAX_VERTICES):
+            return _confidence_decision(
+                ShapeClass("freeform_path", candidates["freeform_path"]),
+                _OPEN_MIN_CONFIDENCE,
+            )
+
         label = max(candidates, key=candidates.get)
-        return ShapeClass(label, candidates[label])
+        runner_up = max((score for name, score in candidates.items()
+                         if name != label), default=0.0)
+        return _confidence_decision(
+            ShapeClass(label, candidates[label]),
+            _OPEN_MIN_CONFIDENCE,
+            _OPEN_MIN_MARGIN,
+            margin=candidates[label] - runner_up,
+        )
 
 
 def _forced_fit(features, target, natural_n):
@@ -366,6 +522,29 @@ def _interior_turn_angles(approx_points):
     return angles
 
 
+def _smooth_turn_fraction(points):
+    """Fraction of small, non-zero direction changes along a sampled stroke.
+
+    A smooth non-circular curve distributes its turn across many adjacent
+    segments. A polyline concentrates most turning at a few corners, while
+    tracking jitter tends to create large alternating changes. This statistic
+    complements the simplified-corner count without replacing it.
+    """
+    if len(points) < 4:
+        return 0.0
+    headings = [math.atan2(b[1] - a[1], b[0] - a[0])
+                for a, b in zip(points, points[1:])]
+    changes = []
+    for first, second in zip(headings, headings[1:]):
+        delta = (second - first + math.pi) % (2.0 * math.pi) - math.pi
+        degrees = abs(math.degrees(delta))
+        if degrees >= 0.5:
+            changes.append(degrees)
+    if not changes:
+        return 0.0
+    return sum(1 for degrees in changes if degrees <= 12.0) / len(changes)
+
+
 def _solve3(matrix, vec):
     """Solve a 3x3 linear system via Cramer's rule. None if singular."""
     def det3(m):
@@ -460,3 +639,36 @@ def _fit_arc(points):
 
 def _clamp(value, low=0.0, high=1.0):
     return max(low, min(high, float(value)))
+
+
+def _confidence_decision(result, min_confidence, min_margin=None, margin=None):
+    """Return a confident result or the shared ``uncertain`` API result.
+
+    Random Forest results carry their class probabilities, so their margin is
+    derived directly from those values. Deterministic open results pass the
+    gap between their top two geometric evidence scores.
+    """
+    confidence = result.confidence
+    if not isinstance(confidence, (int, float)) or not math.isfinite(confidence):
+        return ShapeClass("uncertain", 0.0, result.probabilities)
+
+    evidence_margin = margin
+    probabilities = result.probabilities or {}
+    if probabilities:
+        values = list(probabilities.values())
+        if (len(values) < 2
+                or not all(isinstance(value, (int, float))
+                           and math.isfinite(value) and 0.0 <= value <= 1.0
+                           for value in values)):
+            return ShapeClass("uncertain", _clamp(confidence), probabilities)
+        ordered = sorted((float(value) for value in values), reverse=True)
+        evidence_margin = ordered[0] - ordered[1]
+        confidence = ordered[0]
+
+    ambiguous = (min_margin is not None
+                 and (evidence_margin is None
+                      or not math.isfinite(evidence_margin)
+                      or evidence_margin < min_margin))
+    if confidence < min_confidence or ambiguous:
+        return ShapeClass("uncertain", _clamp(confidence), probabilities)
+    return ShapeClass(result.kind, _clamp(confidence), probabilities)

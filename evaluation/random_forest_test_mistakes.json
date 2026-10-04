@@ -1,0 +1,147 @@
+{
+  "model": "models\\shape_random_forest.joblib",
+  "test_split": "dataset/ml/test",
+  "baseline_evaluation": "evaluation\\shape_random_forest_test_results.json",
+  "sample_count": 61,
+  "accuracy_matches_saved_evaluation": true,
+  "confusion_matrix_matches_saved_evaluation": true,
+  "class_labels": [
+    "circle",
+    "ellipse",
+    "hexagon",
+    "pentagon",
+    "rectangle",
+    "square",
+    "triangle"
+  ],
+  "misclassified_count": 5,
+  "misclassified_samples": [
+    {
+      "sample_id": "ellipse/sample_0009",
+      "test_row": 14,
+      "actual_label": "ellipse",
+      "predicted_label": "circle",
+      "predicted_confidence": 0.22666666666666666,
+      "actual_label_probability": 0.12666666666666668,
+      "class_probabilities": {
+        "circle": 0.22666666666666666,
+        "ellipse": 0.12666666666666668,
+        "hexagon": 0.03,
+        "pentagon": 0.18333333333333332,
+        "rectangle": 0.21,
+        "square": 0.07333333333333333,
+        "triangle": 0.15
+      }
+    },
+    {
+      "sample_id": "circle/sample_0027",
+      "test_row": 28,
+      "actual_label": "circle",
+      "predicted_label": "ellipse",
+      "predicted_confidence": 0.47333333333333333,
+      "actual_label_probability": 0.2733333333333333,
+      "class_probabilities": {
+        "circle": 0.2733333333333333,
+        "ellipse": 0.47333333333333333,
+        "hexagon": 0.03666666666666667,
+        "pentagon": 0.06333333333333334,
+        "rectangle": 0.07333333333333333,
+        "square": 0.06,
+        "triangle": 0.02
+      }
+    },
+    {
+      "sample_id": "ellipse/sample_0044",
+      "test_row": 35,
+      "actual_label": "ellipse",
+      "predicted_label": "rectangle",
+      "predicted_confidence": 0.2733333333333333,
+      "actual_label_probability": 0.19,
+      "class_probabilities": {
+        "circle": 0.23666666666666666,
+        "ellipse": 0.19,
+        "hexagon": 0.22,
+        "pentagon": 0.023333333333333334,
+        "rectangle": 0.2733333333333333,
+        "square": 0.056666666666666664,
+        "triangle": 0.0
+      }
+    },
+    {
+      "sample_id": "rectangle/sample_0038",
+      "test_row": 50,
+      "actual_label": "rectangle",
+      "predicted_label": "pentagon",
+      "predicted_confidence": 0.23666666666666666,
+      "actual_label_probability": 0.22,
+      "class_probabilities": {
+        "circle": 0.02,
+        "ellipse": 0.04666666666666667,
+        "hexagon": 0.06666666666666667,
+        "pentagon": 0.23666666666666666,
+        "rectangle": 0.22,
+        "square": 0.23666666666666666,
+        "triangle": 0.17333333333333334
+      }
+    },
+    {
+      "sample_id": "circle/sample_0049",
+      "test_row": 56,
+      "actual_label": "circle",
+      "predicted_label": "pentagon",
+      "predicted_confidence": 0.3466666666666667,
+      "actual_label_probability": 0.2866666666666667,
+      "class_probabilities": {
+        "circle": 0.2866666666666667,
+        "ellipse": 0.14,
+        "hexagon": 0.04,
+        "pentagon": 0.3466666666666667,
+        "rectangle": 0.10666666666666667,
+        "square": 0.03,
+        "triangle": 0.05
+      }
+    }
+  ],
+  "main_confusion_pairs": [
+    {
+      "actual_label": "circle",
+      "predicted_label": "ellipse",
+      "count": 1,
+      "sample_ids": [
+        "circle/sample_0027"
+      ]
+    },
+    {
+      "actual_label": "circle",
+      "predicted_label": "pentagon",
+      "count": 1,
+      "sample_ids": [
+        "circle/sample_0049"
+      ]
+    },
+    {
+      "actual_label": "ellipse",
+      "predicted_label": "circle",
+      "count": 1,
+      "sample_ids": [
+        "ellipse/sample_0009"
+      ]
+    },
+    {
+      "actual_label": "ellipse",
+      "predicted_label": "rectangle",
+      "count": 1,
+      "sample_ids": [
+        "ellipse/sample_0044"
+      ]
+    },
+    {
+      "actual_label": "rectangle",
+      "predicted_label": "pentagon",
+      "count": 1,
+      "sample_ids": [
+        "rectangle/sample_0038"
+      ]
+    }
+  ]
+}

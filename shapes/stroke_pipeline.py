@@ -5,6 +5,13 @@ from shapes.stroke_normalization import preprocess
 from shapes.closure_detector  import ClosureDetector
 from shapes.stroke_classifier import StrokeClassifier
 from shapes.shape_recommender import ShapeRecommender
+from shapes.candidate_constructors import (
+    CandidateConstructionError,
+    CandidateParameterError,
+    SketchError,
+    build_candidate,
+    derive_parameters_from_sketch,
+)
 
 
 @dataclass
@@ -17,6 +24,7 @@ class ConversionResult:
     norm_features: object # StrokeFeatures on resampled+normalized points (robust classify)
     shape_class: object   # ShapeClass
     recommendation: object  # MeshRecommendation
+    candidates: object = None  # RecommendationResult (ranked 3D candidates)
 
 
 class StrokePipeline:
@@ -55,6 +63,27 @@ class StrokePipeline:
         mesh = None
         if self.factory is not None:
             mesh = self.factory.build(params.recommendation, params.points)
+            # The legacy factory builds a closed circle as a thin extrusion,
+            # which reads visually as a ring. Circle already has a bounded,
+            # taxonomy-ordered recommendation list; use its configured
+            # default candidate (Sphere) for the initial scene object while
+            # leaving all other closed-shape construction unchanged.
+            if (params.closed and params.shape_class.kind.lower() == "circle"
+                    and params.candidates is not None
+                    and params.candidates.status == "ok"):
+                default_id = params.candidates.default_candidate_id
+                if default_id:
+                    try:
+                        candidate_params = derive_parameters_from_sketch(
+                            default_id, params.points,
+                            source_sides=params.candidates.source_sides,
+                        )
+                        mesh = build_candidate(default_id, candidate_params)
+                    except (CandidateConstructionError, CandidateParameterError,
+                            SketchError, TypeError, ValueError):
+                        # Preserve a working closed-profile mesh if candidate
+                        # derivation fails for a malformed or degenerate loop.
+                        pass
 
         # preserve + enrich the raw record
         record.points = params.points          # sealed loop when closed
@@ -63,11 +92,13 @@ class StrokePipeline:
         record.norm_features = params.norm_features  # normalized for classifying
         record.shape_class = params.shape_class
         record.recommendation = params.recommendation
+        record.candidates = params.candidates
 
         result = ConversionResult(
             record=record, mesh=mesh, closed=params.closed,
             features=params.features, norm_features=params.norm_features,
             shape_class=params.shape_class, recommendation=params.recommendation,
+            candidates=params.candidates,
         )
         self.conversions.append(result)
         return result
@@ -91,19 +122,21 @@ class StrokePipeline:
         norm_features = analyze(norm_points)            # robust (for classifying)
         shape_class = self.classifier.classify(points, norm_features, closed)
         recommendation = self.recommender.recommend(points, features, shape_class)
+        candidates = self.recommender.recommend_candidates(shape_class)
         return _FitParams(points, closed, features, norm_features, shape_class,
-                          recommendation)
+                          recommendation, candidates)
 
 
 class _FitParams:
     __slots__ = ("points", "closed", "features", "norm_features",
-                 "shape_class", "recommendation")
+                 "shape_class", "recommendation", "candidates")
 
     def __init__(self, points, closed, features, norm_features, shape_class,
-                 recommendation):
+                 recommendation, candidates=None):
         self.points = points
         self.closed = closed
         self.features = features
         self.norm_features = norm_features
         self.shape_class = shape_class
         self.recommendation = recommendation
+        self.candidates = candidates

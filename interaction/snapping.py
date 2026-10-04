@@ -1,5 +1,30 @@
 import numpy as np
 import math
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True)
+class SnapPreview:
+    """A display-only proposal between two world-space mesh anchors."""
+
+    moving_object: object
+    target_object: object
+    moving_anchor_id: str
+    target_anchor_id: str
+    kind: str
+    moving_position: tuple
+    target_position: tuple
+    distance: float
+
+    def to_dict(self):
+        return {
+            "moving_anchor_id": self.moving_anchor_id,
+            "target_anchor_id": self.target_anchor_id,
+            "kind": self.kind,
+            "moving_position": list(self.moving_position),
+            "target_position": list(self.target_position),
+            "distance": self.distance,
+        }
 
 
 import numpy as np
@@ -57,12 +82,72 @@ class Snapping:
 
     SNAP_DIST    = 60.0   # centre-to-centre proximity to trigger snap
     DETACH_SPEED = 22.0   # px/frame hand velocity to break a snap
+    ANCHOR_PREVIEW_DISTANCE = 40.0  # inclusive world-unit radius
 
-    def __init__(self, snap_distance=60.0):
+    def __init__(self, snap_distance=60.0, enabled=False):
 
         self.snap_distance  = snap_distance
+        # The application has no active Enable Snapping control yet. Keep
+        # anchor metadata passive unless a setting explicitly enables this.
+        self.enabled        = bool(enabled)
         self.snap_candidate = None   # (moving_obj, target_obj, snap_pos)
         self._groups        = []     # list[SnapGroup]
+        self.snap_preview   = None
+
+    def preview_nearest_anchors(self, moving_obj, all_objects):
+        """Select the nearest compatible anchor pair without changing objects.
+
+        Vertices, edges, and faces match only like-for-like. Center anchors are
+        descriptive metadata rather than connection points, so they are not
+        considered. Equal-distance pairs use scene order then stable anchor IDs.
+        """
+        if not self.enabled or moving_obj is None:
+            self.snap_preview = None
+            return None
+
+        grouped = self.get_group(moving_obj)
+        excluded = list(grouped.members) if grouped else [moving_obj]
+        moving_anchors = tuple(getattr(moving_obj, "snap_anchors", ()) or ())
+        if not moving_anchors:
+            self.snap_preview = None
+            return None
+
+        best_key = None
+        best_preview = None
+        for target_index, target in enumerate(all_objects or ()):
+            if any(target is member for member in excluded):
+                continue
+            target_anchors = tuple(getattr(target, "snap_anchors", ()) or ())
+            for moving_anchor in moving_anchors:
+                if moving_anchor.kind not in ("vertex", "edge", "face"):
+                    continue
+                moving_position = np.asarray(moving_anchor.world_position(moving_obj), dtype=float)
+                if moving_position.shape != (3,) or not np.all(np.isfinite(moving_position)):
+                    continue
+                for target_anchor in target_anchors:
+                    if target_anchor.kind != moving_anchor.kind:
+                        continue
+                    target_position = np.asarray(target_anchor.world_position(target), dtype=float)
+                    if target_position.shape != (3,) or not np.all(np.isfinite(target_position)):
+                        continue
+                    distance = float(np.linalg.norm(moving_position - target_position))
+                    if not math.isfinite(distance) or distance > self.ANCHOR_PREVIEW_DISTANCE:
+                        continue
+                    key = (distance, target_index, moving_anchor.anchor_id,
+                           target_anchor.anchor_id)
+                    if best_key is None or key < best_key:
+                        best_key = key
+                        best_preview = SnapPreview(
+                            moving_obj, target, moving_anchor.anchor_id,
+                            target_anchor.anchor_id, moving_anchor.kind,
+                            tuple(float(value) for value in moving_position),
+                            tuple(float(value) for value in target_position), distance,
+                        )
+        self.snap_preview = best_preview
+        return best_preview
+
+    def clear_preview(self):
+        self.snap_preview = None
 
     
 
@@ -72,6 +157,10 @@ class Snapping:
         Finds the nearest snappable face-pair and stores a candidate.
         Returns the candidate target object, or None.
         """
+        if not self.enabled:
+            self._clear_candidate(all_objects)
+            return None
+
         if moving_obj is None:
             self._clear_candidate(all_objects)
             return None
@@ -115,6 +204,13 @@ class Snapping:
         Lock moving_obj (and its group) against the candidate target.
         Call when manipulation ends while a candidate exists.
         """
+        if not self.enabled:
+            if self.snap_candidate:
+                _, target, _ = self.snap_candidate
+                if target is not None:
+                    target.highlighted = False
+                self.snap_candidate = None
+            return False
         if moving_obj is None or self.snap_candidate is None:
             return False
 
@@ -165,6 +261,8 @@ class Snapping:
         Pull obj out of its SnapGroup (called on fast peace-sign yank).
         If the group shrinks to 1, dissolve it entirely.
         """
+        if not self.enabled:
+            return
         group = self.get_group(obj)
         if group is None:
             return
@@ -195,6 +293,8 @@ class Snapping:
         After moving obj by (dx, dy), push the same delta to all
         other members of its group.
         """
+        if not self.enabled:
+            return
         group = self.get_group(obj)
         if group is None:
             return
@@ -205,6 +305,8 @@ class Snapping:
             m.position[1] += dy
 
     def propagate_depth(self, obj, dz):
+        if not self.enabled:
+            return
         group = self.get_group(obj)
         if group is None:
             return
@@ -215,6 +317,8 @@ class Snapping:
 
     def propagate_rotate(self, obj, delta_rx, delta_ry):
         """Rotate all group members by the same delta (simple rigid rotation)."""
+        if not self.enabled:
+            return
         group = self.get_group(obj)
         if group is None:
             return
@@ -229,6 +333,8 @@ class Snapping:
         Scale all group members uniformly to the same absolute scale value.
         (Keeps proportions locked — they scaled together.)
         """
+        if not self.enabled:
+            return
         group = self.get_group(obj)
         if group is None:
             return

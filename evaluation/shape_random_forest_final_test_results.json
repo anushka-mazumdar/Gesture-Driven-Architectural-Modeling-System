@@ -1,0 +1,212 @@
+{
+  "model": "models\\shape_random_forest_final.joblib",
+  "training_split": "dataset/ml/train",
+  "evaluation_split": "dataset/ml/test",
+  "test_used_for_tuning": false,
+  "training_sample_count": 282,
+  "test_sample_count": 61,
+  "feature_dimension": 143,
+  "random_seed": 42,
+  "configuration": {
+    "n_estimators": 300,
+    "max_depth": null,
+    "min_samples_split": 2,
+    "min_samples_leaf": 1,
+    "max_features": 0.5,
+    "class_weight": "balanced_subsample"
+  },
+  "class_labels": [
+    "circle",
+    "ellipse",
+    "triangle",
+    "square",
+    "rectangle",
+    "pentagon",
+    "hexagon"
+  ],
+  "test_sample_ids": [
+    "ellipse/sample_0029",
+    "triangle/sample_0053",
+    "hexagon/sample_0039",
+    "circle/sample_0064",
+    "circle/sample_0022",
+    "square/sample_0035",
+    "triangle/sample_0003",
+    "square/sample_0040",
+    "rectangle/sample_0061",
+    "square/sample_0049",
+    "ellipse/sample_0025",
+    "triangle/sample_0029",
+    "square/sample_0024",
+    "hexagon/sample_0015",
+    "ellipse/sample_0009",
+    "triangle/sample_0032",
+    "hexagon/sample_0042",
+    "pentagon/sample_0009",
+    "pentagon/sample_0003",
+    "rectangle/sample_0005",
+    "circle/sample_0025",
+    "circle/sample_0053",
+    "triangle/sample_0018",
+    "square/sample_0054",
+    "hexagon/sample_0014",
+    "rectangle/sample_0033",
+    "ellipse/sample_0001",
+    "pentagon/sample_0041",
+    "circle/sample_0027",
+    "circle/sample_0069",
+    "hexagon/sample_0001",
+    "hexagon/sample_0032",
+    "pentagon/sample_0033",
+    "rectangle/sample_0024",
+    "rectangle/sample_0016",
+    "ellipse/sample_0044",
+    "square/sample_0061",
+    "triangle/sample_0024",
+    "circle/sample_0066",
+    "triangle/sample_0059",
+    "ellipse/sample_0021",
+    "triangle/sample_0049",
+    "square/sample_0062",
+    "square/sample_0033",
+    "pentagon/sample_0006",
+    "ellipse/sample_0045",
+    "hexagon/sample_0027",
+    "square/sample_0008",
+    "rectangle/sample_0034",
+    "pentagon/sample_0032",
+    "rectangle/sample_0038",
+    "circle/sample_0062",
+    "pentagon/sample_0015",
+    "circle/sample_0068",
+    "circle/sample_0012",
+    "rectangle/sample_0022",
+    "circle/sample_0049",
+    "rectangle/sample_0011",
+    "ellipse/sample_0026",
+    "square/sample_0020",
+    "triangle/sample_0023"
+  ],
+  "test_accuracy": 0.9836065573770492,
+  "test_macro_f1": 0.9842650103519669,
+  "per_class_metrics": {
+    "circle": {
+      "precision": 0.9166666666666666,
+      "recall": 1.0,
+      "f1": 0.9565217391304348,
+      "support": 11
+    },
+    "ellipse": {
+      "precision": 1.0,
+      "recall": 0.875,
+      "f1": 0.9333333333333333,
+      "support": 8
+    },
+    "triangle": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 9
+    },
+    "square": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 10
+    },
+    "rectangle": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 9
+    },
+    "pentagon": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 7
+    },
+    "hexagon": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1": 1.0,
+      "support": 7
+    }
+  },
+  "confusion_matrix": {
+    "labels": [
+      "circle",
+      "ellipse",
+      "triangle",
+      "square",
+      "rectangle",
+      "pentagon",
+      "hexagon"
+    ],
+    "values": [
+      [
+        11,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        1,
+        7,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        9,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        10,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        9,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        7,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        7
+      ]
+    ]
+  }
+}

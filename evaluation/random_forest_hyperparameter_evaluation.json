@@ -1,0 +1,222 @@
+{
+  "experiment": "controlled Random Forest hyperparameter evaluation",
+  "training_split": "dataset/ml/train",
+  "selection_split": "dataset/ml/validation",
+  "test_split_used": false,
+  "model_saved_or_modified": false,
+  "feature_dimension": 143,
+  "class_labels": [
+    "circle",
+    "ellipse",
+    "triangle",
+    "square",
+    "rectangle",
+    "pentagon",
+    "hexagon"
+  ],
+  "random_seed": 42,
+  "candidate_count": 9,
+  "selection_metric": "validation_macro_f1",
+  "tie_break": "first listed candidate",
+  "candidates": [
+    {
+      "name": "baseline",
+      "configuration": {
+        "n_estimators": 300,
+        "max_depth": null,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt"
+      },
+      "validation_accuracy": 0.8524590163934426,
+      "validation_macro_f1": 0.8539855072463769,
+      "validation_per_class_f1": {
+        "circle": 0.8695652173913043,
+        "ellipse": 0.8333333333333334,
+        "triangle": 0.8,
+        "square": 0.8888888888888888,
+        "rectangle": 0.7777777777777778,
+        "pentagon": 0.9333333333333333,
+        "hexagon": 0.875
+      }
+    },
+    {
+      "name": "trees_150",
+      "configuration": {
+        "n_estimators": 150,
+        "max_depth": null,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt"
+      },
+      "validation_accuracy": 0.8524590163934426,
+      "validation_macro_f1": 0.8522976526173458,
+      "validation_per_class_f1": {
+        "circle": 0.8695652173913043,
+        "ellipse": 0.7692307692307693,
+        "triangle": 0.8,
+        "square": 0.9411764705882353,
+        "rectangle": 0.7777777777777778,
+        "pentagon": 0.9333333333333333,
+        "hexagon": 0.875
+      }
+    },
+    {
+      "name": "trees_500",
+      "configuration": {
+        "n_estimators": 500,
+        "max_depth": null,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt"
+      },
+      "validation_accuracy": 0.8524590163934426,
+      "validation_macro_f1": 0.8522976526173458,
+      "validation_per_class_f1": {
+        "circle": 0.8695652173913043,
+        "ellipse": 0.7692307692307693,
+        "triangle": 0.8,
+        "square": 0.9411764705882353,
+        "rectangle": 0.7777777777777778,
+        "pentagon": 0.9333333333333333,
+        "hexagon": 0.875
+      }
+    },
+    {
+      "name": "depth_10",
+      "configuration": {
+        "n_estimators": 300,
+        "max_depth": 10,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt"
+      },
+      "validation_accuracy": 0.8524590163934426,
+      "validation_macro_f1": 0.8539855072463769,
+      "validation_per_class_f1": {
+        "circle": 0.8695652173913043,
+        "ellipse": 0.8333333333333334,
+        "triangle": 0.8,
+        "square": 0.8888888888888888,
+        "rectangle": 0.7777777777777778,
+        "pentagon": 0.9333333333333333,
+        "hexagon": 0.875
+      }
+    },
+    {
+      "name": "depth_20",
+      "configuration": {
+        "n_estimators": 300,
+        "max_depth": 20,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt"
+      },
+      "validation_accuracy": 0.8524590163934426,
+      "validation_macro_f1": 0.8539855072463769,
+      "validation_per_class_f1": {
+        "circle": 0.8695652173913043,
+        "ellipse": 0.8333333333333334,
+        "triangle": 0.8,
+        "square": 0.8888888888888888,
+        "rectangle": 0.7777777777777778,
+        "pentagon": 0.9333333333333333,
+        "hexagon": 0.875
+      }
+    },
+    {
+      "name": "split_4",
+      "configuration": {
+        "n_estimators": 300,
+        "max_depth": null,
+        "min_samples_split": 4,
+        "min_samples_leaf": 1,
+        "max_features": "sqrt"
+      },
+      "validation_accuracy": 0.8688524590163934,
+      "validation_macro_f1": 0.8675023309799189,
+      "validation_per_class_f1": {
+        "circle": 0.8695652173913043,
+        "ellipse": 0.7692307692307693,
+        "triangle": 0.8421052631578947,
+        "square": 0.9411764705882353,
+        "rectangle": 0.8421052631578947,
+        "pentagon": 0.9333333333333333,
+        "hexagon": 0.875
+      }
+    },
+    {
+      "name": "leaf_2",
+      "configuration": {
+        "n_estimators": 300,
+        "max_depth": null,
+        "min_samples_split": 2,
+        "min_samples_leaf": 2,
+        "max_features": "sqrt"
+      },
+      "validation_accuracy": 0.8688524590163934,
+      "validation_macro_f1": 0.8675023309799189,
+      "validation_per_class_f1": {
+        "circle": 0.8695652173913043,
+        "ellipse": 0.7692307692307693,
+        "triangle": 0.8421052631578947,
+        "square": 0.9411764705882353,
+        "rectangle": 0.8421052631578947,
+        "pentagon": 0.9333333333333333,
+        "hexagon": 0.875
+      }
+    },
+    {
+      "name": "features_0_5",
+      "configuration": {
+        "n_estimators": 300,
+        "max_depth": null,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": 0.5
+      },
+      "validation_accuracy": 0.8852459016393442,
+      "validation_macro_f1": 0.8853273422259827,
+      "validation_per_class_f1": {
+        "circle": 0.8695652173913043,
+        "ellipse": 0.8333333333333334,
+        "triangle": 0.8888888888888888,
+        "square": 0.8421052631578947,
+        "rectangle": 0.8888888888888888,
+        "pentagon": 0.9333333333333333,
+        "hexagon": 0.9411764705882353
+      }
+    },
+    {
+      "name": "features_0_8",
+      "configuration": {
+        "n_estimators": 300,
+        "max_depth": null,
+        "min_samples_split": 2,
+        "min_samples_leaf": 1,
+        "max_features": 0.8
+      },
+      "validation_accuracy": 0.8688524590163934,
+      "validation_macro_f1": 0.8649998436376146,
+      "validation_per_class_f1": {
+        "circle": 0.8333333333333334,
+        "ellipse": 0.7272727272727273,
+        "triangle": 0.8888888888888888,
+        "square": 0.8421052631578947,
+        "rectangle": 0.8888888888888888,
+        "pentagon": 0.9333333333333333,
+        "hexagon": 0.9411764705882353
+      }
+    }
+  ],
+  "selected_configuration": {
+    "n_estimators": 300,
+    "max_depth": null,
+    "min_samples_split": 2,
+    "min_samples_leaf": 1,
+    "max_features": 0.5
+  },
+  "selected_candidate": "features_0_5",
+  "selected_validation_macro_f1": 0.8853273422259827,
+  "selected_validation_accuracy": 0.8852459016393442
+}

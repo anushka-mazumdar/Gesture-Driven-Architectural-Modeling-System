@@ -2,15 +2,18 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Gesture Modeling - 3D Scene</title>
+  <title>Gesture Modeling - 2D + 3D</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
-  <div id="scene-container"></div>
-
-  <div id="shape-hud"></div>
-
-  <button id="exit-btn" title="Close the app">&#10005; Exit</button>
+  <main id="application-viewport" aria-label="Gesture modeling workspace">
+    <section id="scene-container" aria-label="3D scene"></section>
+    <div id="draw-hint">Open palm to enable sketching · Index finger to draw</div>
+    <div id="shape-hud"></div>
+    <div id="snap-preview-hud" hidden>SNAP PREVIEW</div>
+    <aside id="candidate-panel" aria-label="Detected shape candidates" hidden></aside>
+    <button id="exit-btn" title="Close the app">&#10005; Exit</button>
+  </main>
 
   <script type="module" src="main.js"></script>
 </body>
