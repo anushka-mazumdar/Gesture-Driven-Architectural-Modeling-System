@@ -90,7 +90,7 @@ class SnapAnchorTests(unittest.TestCase):
         disabled._groups.append(group)
         before = target.position.copy()
         disabled.propagate_move(moving, 10, 5)
-        np.testing.assert_array_equal(target.position, before)
+        np.testing.assert_allclose(target.position, before + (10, 5, 0))
 
         enabled = Snapping(snap_distance=100, enabled=True)
         self.assertIs(enabled.update(moving, [moving, target]), target)

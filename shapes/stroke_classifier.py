@@ -152,6 +152,12 @@ class StrokeClassifier:
         if closed:
             try:
                 fallback = self._classify_closed(features)
+                # Square/rectangle are backed by direct contour geometry
+                # (convex corners, near-right angles, and opposite-edge
+                # agreement). Keep that strong deterministic result instead
+                # of letting the RF override it or reject it as ambiguous.
+                if fallback.kind in {"square", "rectangle"}:
+                    return fallback
                 # Preserve explicit larger N-gon classifications. A generic
                 # polygon with 3-6 corners may still be a supported shape
                 # (for example, a rotated square), so let the model classify it.
@@ -262,6 +268,16 @@ class StrokeClassifier:
                   and features.area > 0)
         if not usable:
             return ShapeClass("polygon", _POLYGON_FLOOR)
+
+        # Hand-drawn and rotated quadrilaterals often simplify to five or six
+        # corners (a little wrist wobble adds vertices), while their axis-
+        # aligned bounding boxes can make a square look rectangular. A strong
+        # four-corner fit is more direct evidence than the RF's learned guess;
+        # use it before the model can turn a clear square/rectangle into an
+        # uncertain result.
+        quadrilateral = _recognize_quadrilateral(features)
+        if quadrilateral is not None:
+            return quadrilateral
 
         candidates = {}
         n, regularity = _polygon_signature(features.approx_points)
@@ -477,6 +493,86 @@ def _polygon_signature(approx_points):
     variance = sum((s - mean) ** 2 for s in sides) / n
     cv = math.sqrt(variance) / mean
     return n, max(0.0, min(1.0, 1.0 - cv))
+
+
+def _recognize_quadrilateral(features):
+    """Return a square/rectangle only when a closed contour has a clean quad fit.
+
+    The fit is rotation-invariant: it measures side lengths and corner angles
+    from simplified vertices instead of relying on the screen-aligned bbox.
+    Up to four small extra vertices may be merged only when their removed area
+    is a small fraction of the full sketch area.
+    """
+    points = list(features.approx_points)
+    if len(points) >= 2 and points[0] == points[-1]:
+        points.pop()
+    natural_count = len(points)
+    if natural_count < 4 or natural_count > 8:
+        return None
+
+    trust = 1.0
+    if natural_count > 4:
+        points, removed_area = simplify_to_count(points, 4, True)
+        trust = max(0.0, 1.0 - removed_area / max(features.area, 1e-9)
+                    / _FORCE_AREA_FRAC_SCALE)
+    if len(points) != 4 or trust < 0.72 or features.solidity < 0.88:
+        return None
+
+    sides = []
+    crosses = []
+    deviations = []
+    for index, current in enumerate(points):
+        previous = points[index - 1]
+        following = points[(index + 1) % 4]
+        to_previous = (previous[0] - current[0], previous[1] - current[1])
+        to_following = (following[0] - current[0], following[1] - current[1])
+        previous_length = math.hypot(*to_previous)
+        following_length = math.hypot(*to_following)
+        if min(previous_length, following_length) <= 1e-9:
+            return None
+        cosine = _clamp(
+            (to_previous[0] * to_following[0]
+             + to_previous[1] * to_following[1])
+            / (previous_length * following_length), -1.0, 1.0,
+        )
+        angle = math.degrees(math.acos(cosine))
+        deviations.append(abs(90.0 - angle))
+        sides.append(following_length)
+        next_point = points[(index + 2) % 4]
+        crosses.append(
+            (following[0] - current[0]) * (next_point[1] - following[1])
+            - (following[1] - current[1]) * (next_point[0] - following[0])
+        )
+
+    # Reject concave, strongly skewed, or self-crossing fits.
+    same_turn_direction = (all(value > 1e-9 for value in crosses)
+                           or all(value < -1e-9 for value in crosses))
+    if (not same_turn_direction or max(deviations) > 27.0
+            or sum(deviations) / 4.0 > 17.0):
+        return None
+
+    # Opposite edges should have similar lengths for a perspective-tolerant
+    # rectangle. Pair averages also make the resulting ratio independent of
+    # rotation and starting corner.
+    pair_a = (sides[0] + sides[2]) / 2.0
+    pair_b = (sides[1] + sides[3]) / 2.0
+    if min(pair_a, pair_b) <= 1e-9:
+        return None
+    opposite_error = max(
+        abs(sides[0] - sides[2]) / pair_a,
+        abs(sides[1] - sides[3]) / pair_b,
+    )
+    if opposite_error > 0.35:
+        return None
+
+    side_ratio = max(pair_a, pair_b) / min(pair_a, pair_b)
+    angle_quality = max(0.0, 1.0 - sum(deviations) / (4.0 * 45.0))
+    edge_quality = max(0.0, 1.0 - opposite_error / 0.5)
+    confidence = _clamp(0.70 + 0.15 * angle_quality
+                        + 0.10 * edge_quality + 0.05 * trust,
+                        low=0.0, high=0.98)
+    label = "square" if side_ratio <= _SQUARE_ASPECT else "rectangle"
+    return ShapeClass(label, confidence)
 
 
 def _open_signature(approx_points):

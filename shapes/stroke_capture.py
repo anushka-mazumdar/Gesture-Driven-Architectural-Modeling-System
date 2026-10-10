@@ -2,7 +2,7 @@ import math
 import time
 from dataclasses import dataclass, field
 
-from shapes.closure_detector import DEFAULT_SNAP_THRESHOLD
+from shapes.closure_detector import ClosureDetector
 
 
 @dataclass
@@ -25,6 +25,7 @@ class StrokeRecord:
     shape_class: object = None    # ShapeClass
     recommendation: object = None # MeshRecommendation
     candidates: object = None     # RecommendationResult (ranked 3D candidates)
+    color: tuple = None           # selected per-stroke RGB, normalized to 0..1
 
 
 class StrokeCapture:
@@ -56,8 +57,16 @@ class StrokeCapture:
 
     # --- lifecycle ---------------------------------------------------
 
-    def start_stroke(self):
+    def start_stroke(self, color=None):
         self.current    = StrokeRecord(start_time=time.time())
+        if color is not None:
+            try:
+                rgb = tuple(float(value) for value in color)
+                if len(rgb) == 3 and all(math.isfinite(value) and 0 <= value <= 1
+                                         for value in rgb):
+                    self.current.color = rgb
+            except (TypeError, ValueError):
+                pass
         self._prev_smooth = None
         self._prev_raw    = None
         self._drawing     = True
@@ -81,9 +90,9 @@ class StrokeCapture:
             default_keep = len(self.current.points) - self.exit_buffer
             keep_s = default_keep
             # Folding the index finger can add several trailing cursor points
-            # while the drawing gesture is ending. Keep the point from that
-            # short tail that best closes a loop; otherwise retain the usual
-            # exit-buffer trim to avoid adding the finger-fold motion.
+            # while the drawing gesture is ending. Keep a tail point near the
+            # start only when the scale- and sample-aware detector accepts it;
+            # a pixel-only cutoff can turn an open pen stroke into a loop.
             if self.current.points:
                 first_x, first_y = self.current.points[0]
                 tail_start = max(1, default_keep - 1)
@@ -95,11 +104,7 @@ class StrokeCapture:
                         self.current.points[index][1] - first_y,
                     ),
                 )
-                best_gap = math.hypot(
-                    self.current.points[best_index][0] - first_x,
-                    self.current.points[best_index][1] - first_y,
-                )
-                if best_gap <= DEFAULT_SNAP_THRESHOLD:
+                if ClosureDetector().detect(self.current.points[:best_index + 1]):
                     keep_s = best_index + 1
 
             keep_r = max(1, len(self.current.raw_points) - self.exit_buffer)
@@ -133,6 +138,15 @@ class StrokeCapture:
         self._prev_smooth = None
         self._prev_raw    = None
         return record
+
+    def cancel(self):
+        """Discard the in-progress stroke without adding it to completed."""
+        self.current = StrokeRecord()
+        self._prev_smooth = None
+        self._prev_raw = None
+        self._drawing = False
+        self._paused = False
+        self._pause_start = None
 
     # --- point capture ----------------------------------------------
 

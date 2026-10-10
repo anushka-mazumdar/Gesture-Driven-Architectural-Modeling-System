@@ -6,12 +6,14 @@ ThreeJSRenderer exposes the object-management surface main.py drives —
     render() — and pushes the same mesh objects (vertices/normals/
 indices/color/position/rotation/scale convention — see
 render/mesh_bridge.py) to the Three.js scene over the Python -> JS
-bridge. Each frame it resends a full snapshot of the scene, so in-place
-transform edits from interaction/manipulation.py reach the live WebView.
+bridge. Bridge work is coalesced on a background thread. New objects send
+geometry once; per-frame changes send only transforms and current UI state.
 """
 
 import json
 import math
+import threading
+import time
 
 from render.mesh_bridge import serialize_mesh, serialize_hand
 
@@ -28,6 +30,11 @@ class ThreeJSRenderer:
         self._ready  = False
         self._hud_text = None
         self._snap_preview = None
+        self._workspace_settings = {
+            "snapping_enabled": False,
+            "mesh_view": False,
+            "stroke_color": [0x66 / 255.0, 0xBF / 255.0, 1.0],
+        }
         self._candidate_panel = None
         self._candidate_index = 0
         self._candidate_search_query = ""
@@ -37,6 +44,24 @@ class ThreeJSRenderer:
         self._drawing_state = {
             "points": [], "drawing_enabled": False, "cursor": None,
             "near_object": False, "delete_progress": 0.0,
+        }
+        self._state_lock = threading.RLock()
+        self._worker_lock = threading.Lock()
+        self._sync_requested = threading.Event()
+        self._sync_stopped = threading.Event()
+        self._sync_condition = threading.Condition()
+        self._sync_thread = None
+        self._requested_generation = 0
+        self._completed_generation = 0
+        self._last_synchronized_generation = 0
+        self._bridge_ids = {}
+        self._bridge_objects = {}
+        self._next_bridge_id = 1
+        self._mesh_transforms = {}
+        self._bridge_stats = {
+            "requests": 0, "completed": 0, "coalesced": 0,
+            "mesh_geometry_payloads": 0, "javascript_calls": 0,
+            "last_sync_seconds": 0.0,
         }
 
     @property
@@ -55,26 +80,92 @@ class ThreeJSRenderer:
 
     def _on_loaded(self, window):
         self._ready = True
+        self._ensure_sync_worker()
+
+    def _ensure_sync_worker(self):
+        with self._worker_lock:
+            if self._sync_thread is not None and self._sync_thread.is_alive():
+                return
+            self._sync_stopped.clear()
+            self._sync_thread = threading.Thread(
+                target=self._sync_worker, name="threejs-bridge", daemon=True
+            )
+            self._sync_thread.start()
+
+    def _sync_worker(self):
+        while not self._sync_stopped.is_set():
+            self._sync_requested.wait()
+            if self._sync_stopped.is_set():
+                break
+            self._sync_requested.clear()
+            with self._sync_condition:
+                generation = self._requested_generation
+            started = time.perf_counter()
+            try:
+                if self._ready and self._window is not None:
+                    self._sync_scene()
+            except Exception as error:
+                print(f"Three.js bridge update failed: {error}")
+            elapsed = time.perf_counter() - started
+            with self._sync_condition:
+                self._completed_generation = max(self._completed_generation, generation)
+                self._bridge_stats["completed"] += 1
+                self._bridge_stats["last_sync_seconds"] = elapsed
+                self._bridge_stats["coalesced"] += max(
+                    0, generation - self._last_synchronized_generation - 1
+                )
+                self._last_synchronized_generation = max(
+                    self._last_synchronized_generation, generation
+                )
+                self._sync_condition.notify_all()
+
+    def wait_for_sync(self, timeout=1.0):
+        """Wait for queued bridge work; intended for integration checks."""
+        deadline = time.monotonic() + timeout
+        with self._sync_condition:
+            target = self._requested_generation
+            while self._completed_generation < target:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._sync_condition.wait(remaining)
+            return True
+
+    def performance_snapshot(self):
+        """Return bridge counters for local diagnostics and performance tests."""
+        with self._sync_condition:
+            return dict(self._bridge_stats)
+
+    def close_bridge(self):
+        self._sync_stopped.set()
+        self._sync_requested.set()
+        thread = self._sync_thread
+        if thread is not None and thread is not threading.current_thread():
+            thread.join(timeout=0.5)
 
     # ─────────────────────────────
     def add_object(self, obj):
-        self.objects.append(obj)
+        with self._state_lock:
+            self.objects.append(obj)
 
     def remove_object(self, obj):
-        if obj in self.objects:
-            self.objects.remove(obj)
+        with self._state_lock:
+            if obj in self.objects:
+                self.objects.remove(obj)
 
     def replace_object(self, old_obj, new_obj):
         """Replace a scene object in place so its order stays stable."""
-        try:
-            index = self.objects.index(old_obj)
-        except ValueError:
-            return False
-        self.objects[index] = new_obj
+        with self._state_lock:
+            try:
+                index = self.objects.index(old_obj)
+            except ValueError:
+                return False
+            self.objects[index] = new_obj
         return True
 
     def clear_objects(self):
-        self.objects.clear()
+        with self._state_lock:
+            self.objects.clear()
 
     def set_hud_text(self, text):
         """Small top-left overlay text in the Three.js window (e.g. the
@@ -108,6 +199,20 @@ class ThreeJSRenderer:
             }
         except (KeyError, TypeError, ValueError):
             self._snap_preview = None
+
+    def set_workspace_settings(self, **settings):
+        """Store display settings and the Python-owned snapping switch."""
+        for key in ("snapping_enabled", "mesh_view"):
+            if key in settings:
+                self._workspace_settings[key] = bool(settings[key])
+        if "stroke_color" in settings:
+            try:
+                color = [float(value) for value in settings["stroke_color"]]
+                if (len(color) == 3 and all(math.isfinite(value) and 0 <= value <= 1
+                                            for value in color)):
+                    self._workspace_settings["stroke_color"] = color
+            except (TypeError, ValueError):
+                pass
 
     def set_candidate_recommendation(self, recommendation):
         """Set the display-only taxonomy recommendation shown in the WebView.
@@ -225,7 +330,7 @@ class ThreeJSRenderer:
 
     def set_drawing_state(self, points=(), drawing_enabled=False,
                           cursor=None, near_object=False, delete_progress=0.0,
-                          hint_visible=True):
+                          hint_visible=True, stroke_color=None):
         """Send Python-captured stroke/cursor state to the WebView overlay."""
         safe_points = []
         if isinstance(points, (list, tuple)):
@@ -256,6 +361,16 @@ class ThreeJSRenderer:
             progress = 0.0
         if not math.isfinite(progress):
             progress = 0.0
+        color = self._workspace_settings.get("stroke_color", [0.4, 0.75, 1.0])
+        if stroke_color is not None:
+            try:
+                candidate_color = [float(value) for value in stroke_color]
+                if (len(candidate_color) == 3
+                        and all(math.isfinite(value) and 0 <= value <= 1
+                                for value in candidate_color)):
+                    color = candidate_color
+            except (TypeError, ValueError):
+                pass
         self._drawing_state = {
             "points": safe_points,
             "drawing_enabled": bool(drawing_enabled),
@@ -263,6 +378,7 @@ class ThreeJSRenderer:
             "near_object": bool(near_object),
             "delete_progress": min(1.0, max(0.0, progress)),
             "hint_visible": bool(hint_visible),
+            "stroke_color": list(color),
         }
 
     def confirm_candidate(self, candidate_id):
@@ -301,47 +417,68 @@ class ThreeJSRenderer:
 
     # ─────────────────────────────
     def render(self, display=None):
-        """Push the current scene state to Three.js, if the window is
-        attached and ready. Runs every call (not just on add/remove) so
-        in-place transform edits from interaction/manipulation.py —
-        which mutate an existing object's position/rotation/scale
-        without re-adding it — still reach the live WebView scene.
-        Python-captured stroke points and cursor state are rendered by a
-        transparent canvas over the Three.js scene in this WebView.
+        """Queue the latest scene state without waiting for WebView/JS work.
+
+        The sync worker coalesces pending updates while retaining current
+        hand, cursor, and object transform state.
         """
         if self._ready and self._window is not None:
-            self._sync_scene()
+            self._ensure_sync_worker()
+            with self._sync_condition:
+                self._requested_generation += 1
+                self._bridge_stats["requests"] += 1
+            self._sync_requested.set()
         return display
 
     def _sync_scene(self):
+        with self._state_lock:
+            objects = list(self.objects)
         hand_obj = None
-        meshes = []
-        for obj in self.objects:
-            if getattr(obj, 'kind', None) == 'hand':
+        added = []
+        transforms = []
+        active_ids = set()
+        for obj in objects:
+            if getattr(obj, "kind", None) == "hand":
                 hand_obj = obj
-            elif len(getattr(obj, 'vertices', [])) > 0:
-                meshes.append(serialize_mesh(obj))
+                continue
+            if not len(getattr(obj, "vertices", [])):
+                continue
+            identity = id(obj)
+            bridge_id = self._bridge_ids.get(identity)
+            if bridge_id is None:
+                bridge_id = self._next_bridge_id
+                self._next_bridge_id += 1
+                self._bridge_ids[identity] = bridge_id
+                self._bridge_objects[identity] = obj
+            active_ids.add(bridge_id)
+            transform = {
+                "id": bridge_id,
+                "position": [float(value) for value in obj.position],
+                "rotation": [float(value) for value in obj.rotation],
+                "scale": [float(value) for value in obj.scale],
+            }
+            transform_key = (tuple(transform["position"]),
+                             tuple(transform["rotation"]),
+                             tuple(transform["scale"]))
+            if bridge_id not in self._mesh_transforms:
+                mesh_data = serialize_mesh(obj)
+                mesh_data["id"] = bridge_id
+                added.append(mesh_data)
+                self._mesh_transforms[bridge_id] = transform_key
+            elif self._mesh_transforms[bridge_id] != transform_key:
+                transforms.append(transform)
+                self._mesh_transforms[bridge_id] = transform_key
 
-        payload = json.dumps(meshes)
-        self._window.evaluate_js(
-            f"window.receiveMeshesFromPython && window.receiveMeshesFromPython({payload})"
-        )
-
-        preview_payload = json.dumps(self._snap_preview)
-        self._window.evaluate_js(
-            "window.receiveSnapPreviewFromPython && "
-            f"window.receiveSnapPreviewFromPython({preview_payload})"
-        )
-
-        hand_payload = json.dumps(serialize_hand(hand_obj) if hand_obj is not None else None)
-        self._window.evaluate_js(
-            f"window.receiveHandFromPython && window.receiveHandFromPython({hand_payload})"
-        )
-
-        hud_payload = json.dumps(self._hud_text)
-        self._window.evaluate_js(
-            f"window.receiveHudFromPython && window.receiveHudFromPython({hud_payload})"
-        )
+        removed = [bridge_id for bridge_id in self._mesh_transforms
+                   if bridge_id not in active_ids]
+        for bridge_id in removed:
+            self._mesh_transforms.pop(bridge_id, None)
+            for identity, assigned_id in list(self._bridge_ids.items()):
+                if assigned_id == bridge_id:
+                    self._bridge_ids.pop(identity, None)
+                    self._bridge_objects.pop(identity, None)
+        delta = {"added": added, "removed": removed, "transforms": transforms}
+        self._bridge_stats["mesh_geometry_payloads"] += len(added)
 
         candidate_payload = self._candidate_panel
         if candidate_payload is not None:
@@ -352,21 +489,19 @@ class ThreeJSRenderer:
                 visible_candidates[self._candidate_index]["id"]
                 if visible_candidates else None
             )
-        candidate_payload = json.dumps(candidate_payload)
+        frame = {
+            "meshes": delta,
+            "snap_preview": self._snap_preview,
+            "workspace_settings": self._workspace_settings,
+            "hand": serialize_hand(hand_obj) if hand_obj is not None else None,
+            "hud": self._hud_text,
+            "candidate_panel": candidate_payload,
+            "candidate_hand_state": (self._candidate_hand_state
+                                      if self.has_candidate_panel else None),
+            "drawing": self._drawing_state,
+        }
+        payload = json.dumps(frame)
         self._window.evaluate_js(
-            "window.receiveCandidatePanelFromPython && "
-            f"window.receiveCandidatePanelFromPython({candidate_payload})"
+            "window.receiveFrameFromPython && window.receiveFrameFromPython(" + payload + ")"
         )
-
-        hand_state_payload = json.dumps(
-            self._candidate_hand_state if self.has_candidate_panel else None
-        )
-        self._window.evaluate_js(
-            "window.receiveCandidateHandStateFromPython && "
-            f"window.receiveCandidateHandStateFromPython({hand_state_payload})"
-        )
-        drawing_payload = json.dumps(self._drawing_state)
-        self._window.evaluate_js(
-            "window.receiveDrawingStateFromPython && "
-            f"window.receiveDrawingStateFromPython({drawing_payload})"
-        )
+        self._bridge_stats["javascript_calls"] += 1

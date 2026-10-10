@@ -1,8 +1,8 @@
 """Single-window host for the drawing interface and Three.js scene."""
 
 
-WINDOW_WIDTH = 1000
-WINDOW_HEIGHT = 700
+WINDOW_WIDTH = 1280
+WINDOW_HEIGHT = 720
 
 
 def create_application_window(webview, api, renderer, on_closing):

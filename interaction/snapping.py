@@ -31,23 +31,36 @@ import numpy as np
 import math
 
 
-class SnapGroup:
-    """
-    A rigid cluster of snapped shapes.
-    One shape is the 'anchor'; all others store a frozen offset relative to it.
-    Moving/rotating/scaling the anchor propagates to every member.
-    """
+class SnapAssembly:
+    """Logical group of separately-rendered objects joined by snap commits."""
 
     def __init__(self, anchor):
         self.anchor  = anchor
         self.members = [anchor]                # anchor is always index-0
         self.offsets = {id(anchor): np.zeros(3, dtype=np.float32)}
+        self._last_states = {id(anchor): self._state(anchor)}
+
+    @staticmethod
+    def _state(obj):
+        rotation = np.asarray(obj.rotation, dtype=float).copy()
+        return {
+            "position": np.asarray(obj.position, dtype=float).copy(),
+            "rotation": rotation,
+            "rotation_matrix": Snapping._rotation_matrix(rotation),
+            "scale": np.asarray(obj.scale, dtype=float).copy(),
+        }
+
+    def remember_transforms(self):
+        """Refresh baselines after an assembly-wide transform."""
+        self._last_states = {id(member): self._state(member)
+                             for member in self.members}
 
     def add(self, obj, offset):
         """offset = obj.position - anchor.position at snap time."""
         if obj not in self.members:
             self.members.append(obj)
             self.offsets[id(obj)] = np.array(offset, dtype=np.float32)
+            self._last_states[id(obj)] = self._state(obj)
 
     def remove(self, obj):
         if obj is self.anchor and len(self.members) > 1:
@@ -62,13 +75,16 @@ class SnapGroup:
 
         self.members  = [m for m in self.members if m is not obj]
         self.offsets.pop(id(obj), None)
+        self._last_states.pop(id(obj), None)
+        self.remember_transforms()
 
     def sync_to_anchor(self):
-        """Re-position every non-anchor member from anchor's current position."""
+        """Reposition members from the anchor's stored positional offsets."""
         for m in self.members:
             if m is self.anchor:
                 continue
             m.position = self.anchor.position + self.offsets[id(m)]
+        self.remember_transforms()
 
     def centroid(self):
         positions = [m.position for m in self.members]
@@ -76,6 +92,10 @@ class SnapGroup:
 
     def __len__(self):
         return len(self.members)
+
+
+# Backwards-compatible name used by existing snapping and anchor code.
+SnapGroup = SnapAssembly
 
 
 class Snapping:
@@ -93,6 +113,11 @@ class Snapping:
         self.snap_candidate = None   # (moving_obj, target_obj, snap_pos)
         self._groups        = []     # list[SnapGroup]
         self.snap_preview   = None
+
+    @property
+    def assemblies(self):
+        """Current logical assemblies; members remain individual scene objects."""
+        return tuple(self._groups)
 
     def preview_nearest_anchors(self, moving_obj, all_objects):
         """Select the nearest compatible anchor pair without changing objects.
@@ -148,6 +173,202 @@ class Snapping:
 
     def clear_preview(self):
         self.snap_preview = None
+
+    def commit_preview(self, moving_obj, all_objects=None):
+        """Commit the current preview with a deterministic rigid transform.
+
+        The active anchor is aligned to the target anchor. Face normals are
+        made opposing; edge directions are aligned using their stable endpoint
+        ordering. Vertices require translation only. Geometry and scale stay
+        untouched, and the connected objects are registered in one assembly.
+        """
+        preview = self.snap_preview
+        if (not self.enabled or preview is None or moving_obj is None
+                or preview.moving_object is not moving_obj
+                or preview.target_object is moving_obj):
+            return False
+        target_obj = preview.target_object
+        if all_objects is not None and not any(target_obj is item for item in all_objects):
+            return False
+        group = self.get_group(moving_obj)
+        if group and any(target_obj is member for member in group.members):
+            return False
+
+        moving_anchor = self._find_anchor(
+            moving_obj, preview.moving_anchor_id, preview.kind
+        )
+        target_anchor = self._find_anchor(
+            target_obj, preview.target_anchor_id, preview.kind
+        )
+        if moving_anchor is None or target_anchor is None:
+            return False
+
+        moving_group = self.get_group(moving_obj)
+        group_before = ({id(member): SnapAssembly._state(member)
+                         for member in moving_group.members}
+                        if moving_group is not None else {})
+        pivot_before = np.asarray(moving_obj.position, dtype=float).copy()
+        rotation_delta = np.eye(3, dtype=float)
+        if preview.kind == "face":
+            moving_normal = moving_anchor.world_normal(moving_obj)
+            target_normal = target_anchor.world_normal(target_obj)
+            if moving_normal is not None and target_normal is not None:
+                rotation_delta = self._rotation_between(
+                    np.asarray(moving_normal, dtype=float),
+                    -np.asarray(target_normal, dtype=float),
+                )
+        elif preview.kind == "edge":
+            moving_direction = self._edge_world_direction(moving_obj, moving_anchor)
+            target_direction = self._edge_world_direction(target_obj, target_anchor)
+            if moving_direction is not None and target_direction is not None:
+                rotation_delta = self._rotation_between(moving_direction, target_direction)
+
+        if not np.allclose(rotation_delta, np.eye(3), atol=1e-12):
+            current_rotation = self._rotation_matrix(moving_obj.rotation)
+            self._write_rotation(moving_obj, rotation_delta @ current_rotation)
+
+        # Recompute after rotation so translation places the active anchor
+        # exactly at the target's current transformed anchor position.
+        moving_position = np.asarray(moving_anchor.world_position(moving_obj), dtype=float)
+        target_position = np.asarray(target_anchor.world_position(target_obj), dtype=float)
+        if (not np.all(np.isfinite(moving_position))
+                or not np.all(np.isfinite(target_position))):
+            return False
+        translated = np.asarray(moving_obj.position, dtype=float) + (target_position - moving_position)
+        translation_delta = translated - np.asarray(moving_obj.position, dtype=float)
+        self._write_position(moving_obj, translated)
+        if moving_group is not None:
+            for member in moving_group.members:
+                if member is moving_obj:
+                    continue
+                state = group_before[id(member)]
+                member_position = (pivot_before
+                                   + rotation_delta @ (state["position"] - pivot_before)
+                                   + translation_delta)
+                self._write_position(member, member_position)
+                self._write_rotation(
+                    member, rotation_delta @ self._rotation_matrix(state["rotation"])
+                )
+            moving_group.remember_transforms()
+        self._join_assembly(moving_obj, target_obj)
+        self.clear_preview()
+        return True
+
+    def _join_assembly(self, moving_obj, target_obj):
+        """Join two snapped objects, merging existing assemblies when needed."""
+        moving_group = self.get_group(moving_obj)
+        target_group = self.get_group(target_obj)
+        if moving_group is not None and moving_group is target_group:
+            return moving_group
+
+        if target_group is not None:
+            destination = target_group
+        elif moving_group is not None:
+            destination = moving_group
+        else:
+            destination = SnapAssembly(target_obj)
+            self._groups.append(destination)
+
+        source = moving_group if destination is target_group else target_group
+        if source is not None:
+            for member in list(source.members):
+                if member not in destination.members:
+                    destination.add(member, member.position - destination.anchor.position)
+            self._groups = [group for group in self._groups if group is not source]
+
+        for member in (moving_obj, target_obj):
+            if member not in destination.members:
+                destination.add(member, member.position - destination.anchor.position)
+        destination.remember_transforms()
+        return destination
+
+    @staticmethod
+    def _find_anchor(obj, anchor_id, kind):
+        for anchor in getattr(obj, "snap_anchors", ()) or ():
+            if anchor.anchor_id == anchor_id and anchor.kind == kind:
+                return anchor
+        return None
+
+    @classmethod
+    def _edge_world_direction(cls, obj, edge_anchor):
+        if len(edge_anchor.source_vertices) != 2:
+            return None
+        endpoints = []
+        for source_key in edge_anchor.source_vertices:
+            vertex = next((anchor for anchor in getattr(obj, "snap_anchors", ()) or ()
+                           if anchor.kind == "vertex"
+                           and anchor.source_vertices == (source_key,)), None)
+            if vertex is None:
+                return None
+            endpoints.append(np.asarray(vertex.world_position(obj), dtype=float))
+        direction = endpoints[1] - endpoints[0]
+        length = float(np.linalg.norm(direction))
+        return direction / length if length > 1e-12 else None
+
+    @staticmethod
+    def _rotation_between(source, target):
+        source = np.asarray(source, dtype=float)
+        target = np.asarray(target, dtype=float)
+        source_len = float(np.linalg.norm(source))
+        target_len = float(np.linalg.norm(target))
+        if source_len <= 1e-12 or target_len <= 1e-12:
+            return np.eye(3, dtype=float)
+        source /= source_len
+        target /= target_len
+        cross = np.cross(source, target)
+        sine = float(np.linalg.norm(cross))
+        cosine = float(np.clip(np.dot(source, target), -1.0, 1.0))
+        if sine <= 1e-12:
+            if cosine >= 0:
+                return np.eye(3, dtype=float)
+            # For an antiparallel pair, choose the least-aligned basis axis so
+            # the 180-degree rotation is stable across runs/platforms.
+            basis = np.eye(3)[int(np.argmin(np.abs(source)))]
+            axis = np.cross(source, basis)
+            axis /= np.linalg.norm(axis)
+            return 2.0 * np.outer(axis, axis) - np.eye(3, dtype=float)
+        axis = cross / sine
+        skew = np.array([
+            [0.0, -axis[2], axis[1]],
+            [axis[2], 0.0, -axis[0]],
+            [-axis[1], axis[0], 0.0],
+        ])
+        return np.eye(3) + skew * sine + (skew @ skew) * (1.0 - cosine)
+
+    @staticmethod
+    def _rotation_matrix(rotation_degrees):
+        angles = np.radians(np.asarray(rotation_degrees, dtype=float).reshape(3))
+        sx, sy, sz = np.sin(angles)
+        cx, cy, cz = np.cos(angles)
+        rx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]], dtype=float)
+        ry = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]], dtype=float)
+        rz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]], dtype=float)
+        return rz @ ry @ rx
+
+    @staticmethod
+    def _write_rotation(obj, matrix):
+        # Extract a Three.js Euler XYZ rotation (Rz * Ry * Rx) in degrees.
+        sy = max(-1.0, min(1.0, -float(matrix[2, 0])))
+        y = math.asin(sy)
+        cy = math.cos(y)
+        if abs(cy) > 1e-8:
+            x = math.atan2(matrix[2, 1], matrix[2, 2])
+            z = math.atan2(matrix[1, 0], matrix[0, 0])
+        else:
+            x = math.atan2(-matrix[1, 2], matrix[1, 1])
+            z = 0.0
+        values = np.degrees((x, y, z))
+        try:
+            obj.rotation[:] = values
+        except (TypeError, AttributeError):
+            obj.rotation = values
+
+    @staticmethod
+    def _write_position(obj, position):
+        try:
+            obj.position[:] = position
+        except (TypeError, AttributeError):
+            obj.position = position
 
     
 
@@ -228,28 +449,7 @@ class Snapping:
         else:
             moving_obj.position = snap_pos.copy()
 
-        target_group  = self.get_group(target)
-        moving_group2 = self.get_group(moving_obj)   
-
-        if target_group and moving_group2:
-            for m in list(moving_group2.members):
-                offset = m.position - target_group.anchor.position
-                target_group.add(m, offset)
-            self._groups = [g for g in self._groups if g is not moving_group2]
-
-        elif target_group:
-            offset = moving_obj.position - target_group.anchor.position
-            target_group.add(moving_obj, offset)
-
-        elif moving_group2:
-            offset = target.position - moving_obj.position
-            moving_group2.add(target, offset)
-
-        else:
-            g = SnapGroup(target)
-            offset = moving_obj.position - target.position
-            g.add(moving_obj, offset)
-            self._groups.append(g)
+        self._join_assembly(moving_obj, target)
 
         target.selected = False
         target.highlighted = False
@@ -293,55 +493,115 @@ class Snapping:
         After moving obj by (dx, dy), push the same delta to all
         other members of its group.
         """
-        if not self.enabled:
-            return
         group = self.get_group(obj)
         if group is None:
+            return
+        dx, dy = float(dx), float(dy)
+        if dx == 0.0 and dy == 0.0:
             return
         for m in group.members:
             if m is obj:
                 continue
             m.position[0] += dx
             m.position[1] += dy
+            state = group._last_states.get(id(m))
+            if state is not None:
+                state["position"][:2] = m.position[:2]
+        state = group._last_states.get(id(obj))
+        if state is not None:
+            state["position"][:] = obj.position
 
     def propagate_depth(self, obj, dz):
-        if not self.enabled:
-            return
         group = self.get_group(obj)
         if group is None:
+            return
+        dz = float(dz)
+        if dz == 0.0:
             return
         for m in group.members:
             if m is obj:
                 continue
             m.position[2] += dz
+            state = group._last_states.get(id(m))
+            if state is not None:
+                state["position"][2] = m.position[2]
+        state = group._last_states.get(id(obj))
+        if state is not None:
+            state["position"][:] = obj.position
 
     def propagate_rotate(self, obj, delta_rx, delta_ry):
-        """Rotate all group members by the same delta (simple rigid rotation)."""
-        if not self.enabled:
-            return
+        """Rotate every member around the manipulated object's current pivot."""
         group = self.get_group(obj)
         if group is None:
             return
-        for m in group.members:
-            if m is obj:
+        previous = group._last_states.get(id(obj))
+        if previous is None:
+            group.remember_transforms()
+            return
+        current_euler = np.asarray(obj.rotation, dtype=float)
+        if np.array_equal(current_euler, previous["rotation"]):
+            return
+        old_rotation = previous["rotation_matrix"]
+        new_rotation = self._rotation_matrix(obj.rotation)
+        rotation_delta = new_rotation @ old_rotation.T
+        old_pivot = previous["position"]
+        new_pivot = np.asarray(obj.position, dtype=float)
+        for member in group.members:
+            if member is obj:
                 continue
-            m.rotation[0] += delta_rx
-            m.rotation[1] += delta_ry
+            state = group._last_states.get(id(member))
+            if state is None:
+                continue
+            translated_position = state["position"] + (new_pivot - old_pivot)
+            rotated_position = new_pivot + rotation_delta @ (translated_position - new_pivot)
+            self._write_position(member, rotated_position)
+            member_rotation = rotation_delta @ state["rotation_matrix"]
+            self._write_rotation(member, member_rotation)
+            state["position"][:] = member.position
+            state["rotation"][:] = member.rotation
+            state["rotation_matrix"][:] = member_rotation
+        previous["position"][:] = obj.position
+        previous["rotation"][:] = obj.rotation
+        previous["rotation_matrix"][:] = new_rotation
 
     def propagate_scale(self, obj, new_scale):
-        """
-        Scale all group members uniformly to the same absolute scale value.
-        (Keeps proportions locked — they scaled together.)
-        """
-        if not self.enabled:
-            return
+        """Scale assembly geometry and member offsets about the active object."""
         group = self.get_group(obj)
         if group is None:
             return
-        for m in group.members:
-            if m is obj:
+        previous = group._last_states.get(id(obj))
+        if previous is None:
+            group.remember_transforms()
+            return
+        old_scale = float(previous["scale"][0])
+        if not math.isfinite(old_scale) or old_scale <= 1e-12:
+            group.remember_transforms()
+            return
+        ratio = float(new_scale) / old_scale
+        if not math.isfinite(ratio) or ratio <= 0:
+            group.remember_transforms()
+            return
+        if math.isclose(ratio, 1.0, rel_tol=0.0, abs_tol=1e-12):
+            previous["position"][:] = obj.position
+            previous["scale"][:] = obj.scale
+            return
+
+        pivot = np.asarray(obj.position, dtype=float)
+        for member in group.members:
+            if member is obj:
                 continue
-            m.scale = np.array([new_scale, new_scale, new_scale], dtype=np.float32)
+            state = group._last_states.get(id(member))
+            if state is None:
+                continue
+            self._write_position(member, pivot + ratio * (state["position"] - previous["position"]))
+            try:
+                member.scale[:] = state["scale"] * ratio
+            except (TypeError, AttributeError):
+                member.scale = state["scale"] * ratio
+            state["position"][:] = member.position
+            state["scale"][:] *= ratio
+        previous["position"][:] = obj.position
+        previous["scale"][:] = obj.scale
 
     
 

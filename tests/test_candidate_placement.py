@@ -60,6 +60,7 @@ class CandidatePlacementTests(unittest.TestCase):
         preview.position[:] = [13.0, -7.0, 24.0]
         preview.rotation[:] = [0.1, 0.2, 0.3]
         preview.scale[:] = [1.2, 0.8, 1.1]
+        preview.color = (239 / 255.0, 83 / 255.0, 80 / 255.0)
 
         candidate_ids = result.candidates.candidate_ids
         for _ in range(len(candidate_ids) - 1):
@@ -80,6 +81,7 @@ class CandidatePlacementTests(unittest.TestCase):
         np.testing.assert_allclose(placed.position, [13.0, -7.0, 24.0])
         np.testing.assert_allclose(placed.rotation, [0.1, 0.2, 0.3])
         np.testing.assert_allclose(placed.scale, [1.2, 0.8, 1.1])
+        np.testing.assert_allclose(placed.color, preview.color)
         self.assertEqual(placed.shape_class.kind, label)
         self.assertIs(placement.active_object, placed)
         self.assertIs(selection.get_selected(), placed)

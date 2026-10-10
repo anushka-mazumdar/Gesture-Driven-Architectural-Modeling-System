@@ -2,12 +2,86 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>Gesture Modeling - 2D + 3D</title>
+  <title>Gesture Modeling Workspace</title>
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
   <main id="application-viewport" aria-label="Gesture modeling workspace">
     <section id="scene-container" aria-label="3D scene"></section>
+    <aside id="workspace-panel" aria-label="Workspace controls">
+      <header class="workspace-brand">
+        <div class="workspace-brand__mark" aria-hidden="true">GM</div>
+        <div>
+          <strong>FORM<span>SPACE</span></strong>
+          <small>GESTURE MODELING</small>
+        </div>
+      </header>
+
+      <label class="workspace-search" for="workspace-search-input">
+        <span aria-hidden="true">⌕</span>
+        <input id="workspace-search-input" type="search" placeholder="Search workspace" autocomplete="off" />
+        <kbd>/</kbd>
+      </label>
+
+      <section class="control-section" aria-labelledby="input-heading">
+        <div class="section-title"><span id="input-heading">INPUT MODE</span><span class="section-index">01</span></div>
+        <div class="mode-switch" role="group" aria-label="Input mode">
+          <button id="draw-mode-button" class="mode-switch__button is-active" type="button" aria-pressed="true">
+            <span aria-hidden="true">✳</span> Draw
+          </button>
+          <button id="touch-mode-button" class="mode-switch__button" type="button" disabled title="Touch input is not connected yet">
+            <span aria-hidden="true">⌁</span> Touch <small>SOON</small>
+          </button>
+        </div>
+        <p class="section-note" id="input-mode-note">Draw with your tracked hand</p>
+      </section>
+
+      <section class="control-section" aria-labelledby="color-heading">
+        <div class="section-title"><span id="color-heading">SHAPE COLOR</span><span class="color-value" id="color-value">BLUE</span></div>
+        <div class="color-palette" role="group" aria-label="New shape color">
+          <button class="color-swatch" type="button" data-color="#ef5350" aria-label="Red" title="Red"></button>
+          <button class="color-swatch" type="button" data-color="#f4d35e" aria-label="Yellow" title="Yellow"></button>
+          <button class="color-swatch is-selected" type="button" data-color="#66bfff" aria-label="Blue" title="Blue"></button>
+          <button class="color-swatch" type="button" data-color="#a48bfa" aria-label="Violet" title="Violet"></button>
+          <button class="color-swatch" type="button" data-color="#67d9aa" aria-label="Mint" title="Mint"></button>
+        </div>
+        <p class="section-note">Applies to the next stroke</p>
+      </section>
+
+      <section class="control-section" aria-labelledby="display-heading">
+        <div class="section-title"><span id="display-heading">DISPLAY</span><span class="section-index">02</span></div>
+        <div class="setting-row">
+          <div class="setting-icon" aria-hidden="true">▧</div>
+          <div class="setting-copy"><strong>Mesh View</strong><small>Show object edges</small></div>
+          <label class="toggle-control" aria-label="Mesh View">
+            <input id="mesh-view-toggle" type="checkbox" />
+            <span></span>
+          </label>
+        </div>
+      </section>
+
+      <section class="control-section" aria-labelledby="interaction-heading">
+        <div class="section-title"><span id="interaction-heading">INTERACTION</span><span class="section-index">03</span></div>
+        <div class="setting-row">
+          <div class="setting-icon setting-icon--snap" aria-hidden="true">⌖</div>
+          <div class="setting-copy"><strong>Snapping</strong><small>Preview nearby anchors</small></div>
+          <label class="toggle-control" aria-label="Enable Snapping">
+            <input id="snapping-toggle" type="checkbox" />
+            <span></span>
+          </label>
+        </div>
+        <p class="setting-footnote">Preview while moving · align on release.</p>
+      </section>
+
+      <section class="clear-scene-section" aria-label="Board actions">
+        <button id="clear-scene-button" class="clear-scene-button" type="button">
+          <span aria-hidden="true">⌫</span>
+          <span><strong>Clear scene</strong><small>Remove everything on the board</small></span>
+        </button>
+      </section>
+
+      <footer class="workspace-footer"><span class="status-dot"></span> SINGLE VIEWPORT <span class="workspace-version">WORKSPACE</span></footer>
+    </aside>
     <div id="draw-hint">Open palm to enable sketching · Index finger to draw</div>
     <div id="shape-hud"></div>
     <div id="snap-preview-hud" hidden>SNAP PREVIEW</div>

@@ -4,6 +4,7 @@ import { createCandidatePanelController } from './candidate_panel.mjs';
 // ---- Scene setup -----------------------------------------------------------
 
 const container = document.getElementById('scene-container');
+let meshViewEnabled = false;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x111318);
@@ -31,16 +32,59 @@ const dirLight = new THREE.DirectionalLight(0xffffff, 1.0);
 dirLight.position.set(3, 5, 2);
 scene.add(dirLight);
 
-const grid = new THREE.GridHelper(800, 20, 0x334, 0x223);
+// Procedural editor grid: the scene contains only a two-triangle plane; the
+// repeating grid is drawn in its shader instead of allocating a huge line grid.
+const grid = new THREE.Mesh(
+  new THREE.PlaneGeometry(20000, 20000),
+  new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    extensions: { derivatives: true },
+    uniforms: {
+      minorColor: { value: new THREE.Color(0x252d3b) },
+      majorColor: { value: new THREE.Color(0x354153) },
+    },
+    vertexShader: `
+      varying vec3 vWorldPosition;
+      void main() {
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        gl_Position = projectionMatrix * viewMatrix * worldPosition;
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 minorColor;
+      uniform vec3 majorColor;
+      varying vec3 vWorldPosition;
+      float gridLine(vec2 coordinate, float spacing) {
+        vec2 cell = coordinate / spacing;
+        vec2 distanceToLine = abs(fract(cell - 0.5) - 0.5) / fwidth(cell);
+        return 1.0 - min(min(distanceToLine.x, distanceToLine.y), 1.0);
+      }
+      void main() {
+        vec2 plane = vWorldPosition.xz;
+        float minor = gridLine(plane, 25.0);
+        float major = gridLine(plane, 100.0);
+        float fade = 1.0 - smoothstep(1300.0, 6500.0,
+          distance(cameraPosition.xz, plane));
+        float alpha = max(minor * 0.24, major * 0.52) * fade;
+        vec3 color = mix(minorColor, majorColor, smoothstep(0.05, 0.4, major));
+        gl_FragColor = vec4(color, alpha);
+        if (gl_FragColor.a < 0.015) discard;
+      }
+    `,
+  })
+);
+grid.rotation.x = -Math.PI / 2;
 grid.position.y = -100;
+grid.renderOrder = -2;
 scene.add(grid);
 
 // ---- Live scene: meshes pushed from Python --------------------------------
 //
-// render/threejs_renderer.py pushes a full snapshot of the current scene
-// objects every frame. Each mesh is built into a THREE.BufferGeometry
-// from vertices/normals/indices produced by render/primitives.py and gets
-// the same position/rotation/scale TRS transform applied.
+// render/threejs_renderer.py sends new mesh geometry once, then lightweight
+// transform deltas. BufferGeometry is only built when a scene object is added.
 
 function buildMeshFromBridgeData(data) {
   const geometry = new THREE.BufferGeometry();
@@ -62,6 +106,7 @@ function buildMeshFromBridgeData(data) {
     // traced by the user in either winding direction, so keep both sides
     // visible instead of assuming one winding is always correct.
     side: THREE.DoubleSide,
+    wireframe: meshViewEnabled,
   });
 
   const mesh = new THREE.Mesh(geometry, material);
@@ -80,8 +125,46 @@ function buildMeshFromBridgeData(data) {
 
 const liveSceneGroup = new THREE.Group();
 scene.add(liveSceneGroup);
+const liveMeshesById = new Map();
 const drawingPreviewGroup = new THREE.Group();
 scene.add(drawingPreviewGroup);
+const drawingLineGeometry = new THREE.BufferGeometry();
+let drawingLineCapacity = 256;
+const drawingStrokeHalfWidth = 1.35;
+let drawingLinePositions = new Float32Array(drawingLineCapacity * 2 * 3);
+let drawingLineIndices = new Uint32Array((drawingLineCapacity - 1) * 6);
+for (let index = 0; index < drawingLineCapacity - 1; index += 1) {
+  const first = index * 2;
+  const next = first + 2;
+  const offset = index * 6;
+  drawingLineIndices.set([first, first + 1, next, first + 1, next + 1, next], offset);
+}
+let drawingLineAttribute = new THREE.BufferAttribute(drawingLinePositions, 3);
+drawingLineAttribute.setUsage(THREE.DynamicDrawUsage);
+drawingLineGeometry.setAttribute('position', drawingLineAttribute);
+drawingLineGeometry.setIndex(new THREE.BufferAttribute(drawingLineIndices, 1));
+drawingLineGeometry.setDrawRange(0, 0);
+const drawingLine = new THREE.Mesh(
+  drawingLineGeometry,
+  new THREE.MeshBasicMaterial({
+    color: 0x66bfff, transparent: true, opacity: 0.96,
+    depthTest: false, depthWrite: false, side: THREE.DoubleSide,
+  })
+);
+drawingLine.renderOrder = 20;
+drawingPreviewGroup.add(drawingLine);
+let lastPreviewPointCount = -1;
+let lastPreviewLastPoint = null;
+let lastPreviewColor = '';
+const cursorMaterial = new THREE.MeshBasicMaterial({
+  color: 0xf3f7ff, depthTest: false, depthWrite: false,
+});
+const cursorRing = new THREE.Mesh(new THREE.RingGeometry(7.5, 9.5, 32), cursorMaterial);
+const cursorDot = new THREE.Mesh(new THREE.CircleGeometry(2, 16), cursorMaterial);
+let deleteProgressArc = null;
+cursorRing.renderOrder = 21;
+cursorDot.renderOrder = 21;
+drawingPreviewGroup.add(cursorRing, cursorDot);
 const snapPreviewGroup = new THREE.Group();
 scene.add(snapPreviewGroup);
 const snapPreviewHud = document.getElementById('snap-preview-hud');
@@ -147,16 +230,37 @@ window.receiveSnapPreviewFromPython = function (preview) {
   }
 };
 
-// Rebuilt in full on each push — object counts are small.
-window.receiveMeshesFromPython = function (meshList) {
-  for (const child of liveSceneGroup.children.slice()) {
-    liveSceneGroup.remove(child);
-    child.geometry.dispose();
-    child.material.dispose();
+window.receiveMeshesFromPython = function (delta) {
+  if (!delta || Array.isArray(delta)) return;
+  for (const id of delta.removed || []) {
+    const mesh = liveMeshesById.get(id);
+    if (!mesh) continue;
+    liveSceneGroup.remove(mesh);
+    mesh.geometry.dispose();
+    mesh.material.dispose();
+    liveMeshesById.delete(id);
   }
-
-  for (const data of meshList) {
-    liveSceneGroup.add(buildMeshFromBridgeData(data));
+  for (const data of delta.added || []) {
+    const previous = liveMeshesById.get(data.id);
+    if (previous) {
+      liveSceneGroup.remove(previous);
+      previous.geometry.dispose();
+      previous.material.dispose();
+    }
+    const mesh = buildMeshFromBridgeData(data);
+    liveMeshesById.set(data.id, mesh);
+    liveSceneGroup.add(mesh);
+  }
+  for (const transform of delta.transforms || []) {
+    const mesh = liveMeshesById.get(transform.id);
+    if (!mesh) continue;
+    mesh.position.set(...transform.position);
+    mesh.rotation.set(
+      THREE.MathUtils.degToRad(transform.rotation[0]),
+      THREE.MathUtils.degToRad(transform.rotation[1]),
+      THREE.MathUtils.degToRad(transform.rotation[2]), 'XYZ'
+    );
+    mesh.scale.set(...transform.scale);
   }
 };
 
@@ -176,62 +280,68 @@ window.receiveHudFromPython = function (text) {
 
 const drawHint = document.getElementById('draw-hint');
 
-function clearDrawingPreview() {
-  for (const child of drawingPreviewGroup.children.slice()) {
-    drawingPreviewGroup.remove(child);
-    child.geometry.dispose();
-    child.material.dispose();
-  }
-}
-
 window.receiveDrawingStateFromPython = function (state) {
   if (!state) return;
-  const width = container.clientWidth;
-  const height = container.clientHeight;
-  clearDrawingPreview();
-
   const points = Array.isArray(state.points) ? state.points : [];
-  if (points.length > 1) {
-    const path = points.map(([x, y]) => new THREE.Vector3(x - 320, 240 - y, 8));
-    const curve = new THREE.CatmullRomCurve3(path);
-    const geometry = new THREE.TubeGeometry(
-      curve, Math.max(12, path.length * 5), 2.4, 8, false
-    );
-    const material = new THREE.MeshBasicMaterial({
-      color: 0x64dcff,
-      transparent: true,
-      opacity: 0.96,
-      depthTest: false,
-      depthWrite: false,
-    });
-    const preview = new THREE.Mesh(geometry, material);
-    preview.renderOrder = 20;
-    drawingPreviewGroup.add(preview);
+  const lastPoint = points.length ? points[points.length - 1] : null;
+  const colorKey = Array.isArray(state.stroke_color) ? state.stroke_color.join(',') : '';
+  const pointsChanged = points.length !== lastPreviewPointCount
+    || (lastPoint && (!lastPreviewLastPoint
+      || lastPoint[0] !== lastPreviewLastPoint[0]
+      || lastPoint[1] !== lastPreviewLastPoint[1]));
+  if (pointsChanged) {
+    if (points.length > drawingLineCapacity) {
+      while (drawingLineCapacity < points.length) drawingLineCapacity *= 2;
+      drawingLinePositions = new Float32Array(drawingLineCapacity * 2 * 3);
+      drawingLineIndices = new Uint32Array((drawingLineCapacity - 1) * 6);
+      for (let index = 0; index < drawingLineCapacity - 1; index += 1) {
+        const first = index * 2;
+        const next = first + 2;
+        const offset = index * 6;
+        drawingLineIndices.set([first, first + 1, next, first + 1, next + 1, next], offset);
+      }
+      drawingLineAttribute = new THREE.BufferAttribute(drawingLinePositions, 3);
+      drawingLineAttribute.setUsage(THREE.DynamicDrawUsage);
+      drawingLineGeometry.setAttribute('position', drawingLineAttribute);
+      drawingLineGeometry.setIndex(new THREE.BufferAttribute(drawingLineIndices, 1));
+    }
+    for (let index = 0; index < points.length; index += 1) {
+      const previous = points[Math.max(0, index - 1)];
+      const next = points[Math.min(points.length - 1, index + 1)];
+      const tangentX = next[0] - previous[0];
+      const tangentY = next[1] - previous[1];
+      const tangentLength = Math.hypot(tangentX, tangentY) || 1;
+      const normalX = -tangentY / tangentLength * drawingStrokeHalfWidth;
+      const normalY = tangentX / tangentLength * drawingStrokeHalfWidth;
+      const centerX = points[index][0] - 320;
+      const centerY = 240 - points[index][1];
+      const offset = index * 6;
+      drawingLinePositions[offset] = centerX + normalX;
+      drawingLinePositions[offset + 1] = centerY - normalY;
+      drawingLinePositions[offset + 2] = 8;
+      drawingLinePositions[offset + 3] = centerX - normalX;
+      drawingLinePositions[offset + 4] = centerY + normalY;
+      drawingLinePositions[offset + 5] = 8;
+    }
+    drawingLineAttribute.needsUpdate = true;
+    drawingLineGeometry.setDrawRange(0, Math.max(0, points.length - 1) * 6);
+    lastPreviewPointCount = points.length;
+    lastPreviewLastPoint = lastPoint ? [...lastPoint] : null;
+  }
+  if (colorKey !== lastPreviewColor) {
+    drawingLine.material.color.set(Array.isArray(state.stroke_color)
+      && state.stroke_color.length === 3
+      ? new THREE.Color(...state.stroke_color) : 0x66bfff);
+    lastPreviewColor = colorKey;
   }
 
   if (Array.isArray(state.cursor) && state.cursor.length === 2) {
     const x = state.cursor[0] * 640 - 320;
     const y = 240 - state.cursor[1] * 480;
     const cursorColor = state.near_object ? 0x64ffc3 : 0xf3f7ff;
-    const ring = new THREE.Mesh(
-      new THREE.RingGeometry(7.5, 9.5, 32),
-      new THREE.MeshBasicMaterial({
-        color: cursorColor, depthTest: false, depthWrite: false,
-      })
-    );
-    ring.position.set(x, y, 12);
-    ring.renderOrder = 21;
-    drawingPreviewGroup.add(ring);
-
-    const dot = new THREE.Mesh(
-      new THREE.CircleGeometry(2, 16),
-      new THREE.MeshBasicMaterial({
-        color: cursorColor, depthTest: false, depthWrite: false,
-      })
-    );
-    dot.position.set(x, y, 12);
-    dot.renderOrder = 21;
-    drawingPreviewGroup.add(dot);
+    cursorMaterial.color.set(cursorColor);
+    cursorRing.position.set(x, y, 12);
+    cursorDot.position.set(x, y, 12);
 
     if (state.delete_progress > 0) {
       const arcPoints = [];
@@ -241,13 +351,30 @@ window.receiveDrawingStateFromPython = function (state) {
         arcPoints.push(new THREE.Vector3(x + Math.cos(angle) * 15,
           y + Math.sin(angle) * 15, 13));
       }
+      if (deleteProgressArc) {
+        drawingPreviewGroup.remove(deleteProgressArc);
+        deleteProgressArc.geometry.dispose();
+        deleteProgressArc.material.dispose();
+      }
       const arc = new THREE.Line(
         new THREE.BufferGeometry().setFromPoints(arcPoints),
         new THREE.LineBasicMaterial({ color: 0xff5a5a, depthTest: false })
       );
       arc.renderOrder = 22;
       drawingPreviewGroup.add(arc);
+      deleteProgressArc = arc;
     }
+    cursorRing.visible = true;
+    cursorDot.visible = true;
+  } else {
+    cursorRing.visible = false;
+    cursorDot.visible = false;
+  }
+  if (!(state.delete_progress > 0) && deleteProgressArc) {
+    drawingPreviewGroup.remove(deleteProgressArc);
+    deleteProgressArc.geometry.dispose();
+    deleteProgressArc.material.dispose();
+    deleteProgressArc = null;
   }
 
   drawHint.hidden = state.hint_visible === false;
@@ -275,6 +402,9 @@ const candidatePanel = createCandidatePanelController(
   }
 );
 window.receiveCandidatePanelFromPython = function (recommendation) {
+  document.getElementById('workspace-panel')?.classList.toggle(
+    'is-recommendation-active', Boolean(recommendation && recommendation.status === 'ok')
+  );
   candidatePanel.update(recommendation);
 };
 window.receiveCandidateHandStateFromPython = function (handState) {
@@ -289,6 +419,135 @@ window.receiveCandidateHandStateFromPython = function (handState) {
     closed_fist: handState.closed_fist,
   });
 };
+
+// Workspace settings are mirrored from Python; the UI never edits gesture or
+// snap state locally. Recommendation mode temporarily locks normal controls.
+window.receiveWorkspaceSettingsFromPython = function (settings) {
+  if (!settings) return;
+  const snapToggle = document.getElementById('snapping-toggle');
+  const meshToggle = document.getElementById('mesh-view-toggle');
+  if (snapToggle) snapToggle.checked = Boolean(settings.snapping_enabled);
+  if (Array.isArray(settings.stroke_color) && settings.stroke_color.length === 3) {
+    const hex = `#${settings.stroke_color.map((component) =>
+      Math.round(Math.max(0, Math.min(1, component)) * 255)
+        .toString(16).padStart(2, '0')
+    ).join('')}`;
+    const selected = [...document.querySelectorAll('.color-swatch')]
+      .find((swatch) => swatch.dataset.color.toLowerCase() === hex);
+    if (selected) {
+      document.querySelector('.color-swatch.is-selected')?.classList.remove('is-selected');
+      selected.classList.add('is-selected');
+      workspacePanel?.style.setProperty('--workspace-accent', hex);
+      const colorName = selected.getAttribute('aria-label') || 'CUSTOM';
+      document.getElementById('color-value').textContent = colorName.toUpperCase();
+    }
+  }
+  const nextMeshView = Boolean(settings.mesh_view);
+  if (meshToggle) meshToggle.checked = nextMeshView;
+  if (nextMeshView !== meshViewEnabled) {
+    meshViewEnabled = nextMeshView;
+    liveSceneGroup.traverse((object) => {
+      if (object.material) {
+        const materials = Array.isArray(object.material) ? object.material : [object.material];
+        materials.forEach((material) => { material.wireframe = meshViewEnabled; });
+      }
+    });
+  }
+};
+
+const workspacePanel = document.getElementById('workspace-panel');
+const snappingToggle = document.getElementById('snapping-toggle');
+const meshViewToggle = document.getElementById('mesh-view-toggle');
+const drawModeButton = document.getElementById('draw-mode-button');
+const clearSceneButton = document.getElementById('clear-scene-button');
+
+function reportSettingFailure(toggle, previousValue) {
+  toggle.checked = previousValue;
+  toggle.title = 'Could not update this setting';
+}
+
+snappingToggle?.addEventListener('change', async () => {
+  const previousValue = !snappingToggle.checked;
+  try {
+    const setEnabled = window.pywebview?.api?.set_snapping_enabled;
+    if (!setEnabled) throw new Error('Python bridge unavailable');
+    const enabled = await setEnabled(snappingToggle.checked);
+    snappingToggle.checked = Boolean(enabled);
+    snappingToggle.title = enabled ? 'Snapping enabled' : 'Snapping disabled';
+  } catch (_error) {
+    reportSettingFailure(snappingToggle, previousValue);
+  }
+});
+
+meshViewToggle?.addEventListener('change', async () => {
+  const previousValue = !meshViewToggle.checked;
+  try {
+    const setMeshView = window.pywebview?.api?.set_mesh_view;
+    if (!setMeshView) throw new Error('Python bridge unavailable');
+    await setMeshView(meshViewToggle.checked);
+  } catch (_error) {
+    reportSettingFailure(meshViewToggle, previousValue);
+  }
+});
+
+drawModeButton?.addEventListener('click', async () => {
+  try {
+    const setDrawing = window.pywebview?.api?.set_drawing_enabled;
+    if (!setDrawing) return;
+    const enabled = await setDrawing(true);
+    if (enabled) {
+      drawModeButton.classList.add('is-active');
+      drawModeButton.setAttribute('aria-pressed', 'true');
+    }
+  } catch (_error) {
+    // Gesture-based drawing remains available if the optional UI bridge fails.
+  }
+});
+
+clearSceneButton?.addEventListener('click', async () => {
+  clearSceneButton.disabled = true;
+  try {
+    const clearScene = window.pywebview?.api?.clear_scene;
+    if (!clearScene) throw new Error('Python bridge unavailable');
+    const cleared = await clearScene();
+    if (!cleared) throw new Error('Scene could not be cleared');
+    clearSceneButton.title = 'Scene cleared';
+  } catch (_error) {
+    clearSceneButton.title = 'Could not clear the scene';
+  } finally {
+    clearSceneButton.disabled = false;
+  }
+});
+
+document.querySelectorAll('.color-swatch').forEach((swatch) => {
+  swatch.addEventListener('click', async () => {
+    const previous = document.querySelector('.color-swatch.is-selected');
+    try {
+      const setColor = window.pywebview?.api?.set_stroke_color;
+      if (!setColor) throw new Error('Python bridge unavailable');
+      const accepted = await setColor(swatch.dataset.color);
+      if (!Array.isArray(accepted)) throw new Error('Color was rejected');
+      previous?.classList.remove('is-selected');
+      swatch.classList.add('is-selected');
+      workspacePanel?.style.setProperty('--workspace-accent', swatch.dataset.color);
+      const colorName = swatch.getAttribute('aria-label') || 'CUSTOM';
+      document.getElementById('color-value').textContent = colorName.toUpperCase();
+    } catch (_error) {
+      // Keep Python's active shape color authoritative if the bridge fails.
+    }
+  });
+});
+
+const workspaceSearch = document.getElementById('workspace-search-input');
+window.addEventListener('keydown', (event) => {
+  if (event.key === '/' && !event.target.matches('input, textarea')) {
+    event.preventDefault();
+    workspaceSearch?.focus();
+  }
+  if (event.key === 'Escape' && document.activeElement === workspaceSearch) {
+    workspaceSearch.blur();
+  }
+});
 
 // ---- Tracked-hand overlay --------------------------------------------------
 //
@@ -398,6 +657,20 @@ window.receiveHandFromPython = function (landmarks) {
   for (const { points, radius, tipRadius } of FINGER_CHAINS) {
     addFingerTube(points.map((i) => landmarks[i]), radius, tipRadius);
   }
+};
+
+// Python batches current state into one call so its tracking loop never waits
+// on several separate WebView round trips.
+window.receiveFrameFromPython = function (frame) {
+  if (!frame) return;
+  window.receiveMeshesFromPython?.(frame.meshes);
+  window.receiveSnapPreviewFromPython?.(frame.snap_preview);
+  window.receiveWorkspaceSettingsFromPython?.(frame.workspace_settings);
+  window.receiveHandFromPython?.(frame.hand);
+  window.receiveHudFromPython?.(frame.hud);
+  window.receiveCandidatePanelFromPython?.(frame.candidate_panel);
+  window.receiveCandidateHandStateFromPython?.(frame.candidate_hand_state);
+  window.receiveDrawingStateFromPython?.(frame.drawing);
 };
 
 // ---- UI --------------------------------------------------------------------

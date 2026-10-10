@@ -463,7 +463,8 @@ def _arc_tube_derive(s, _):
 
 def _build_arc_tube(b, p):
     geo.sweep(b, geo.arc_path(p["radius"], p["sweep_angle"], p["segments"]),
-              geo.circle_section(p["tube_radius"], p["radial_segments"]))
+              geo.circle_section(p["tube_radius"], p["radial_segments"]),
+              closed=False)
 
 
 _ARC_TUBE_PARAMS = (
@@ -480,7 +481,8 @@ def _tube_on_path(smoothing_default):
 
     def build(b, p):
         geo.sweep(b, geo.chaikin(p["path"], p["smoothing"]),
-                  geo.circle_section(p["radius"], p["radial_segments"]))
+                  geo.circle_section(p["radius"], p["radial_segments"]),
+                  closed=False)
 
     def derive(s, _):
         return {"path": _sketch_path(s), "radius": s.stroke_radius}
@@ -500,7 +502,8 @@ def _beam_on_path(smoothing_default, ribbon=False):
 
     def build(b, p):
         u, v = (p["thickness"], p["width"]) if ribbon else (p["width"], p["thickness"])
-        geo.sweep(b, geo.chaikin(p["path"], p["smoothing"]), geo.rect_section(u, v))
+        geo.sweep(b, geo.chaikin(p["path"], p["smoothing"]),
+                  geo.rect_section(u, v), closed=False)
 
     def derive(s, _):
         size = 2.0 * s.stroke_radius
@@ -724,7 +727,8 @@ _SPECS = [
           (_dim("length", 200.0, "Length along X"), _dim("radius", 10.0, "Rod radius"),
            _TUBE_SEGMENTS),
           lambda b, p: geo.sweep(b, [(-p["length"] / 2, 0.0), (p["length"] / 2, 0.0)],
-                                 geo.circle_section(p["radius"], p["radial_segments"])),
+                                 geo.circle_section(p["radius"], p["radial_segments"]),
+                                 closed=False),
           lambda s, _: {"length": s.chord, "radius": s.stroke_radius},
           "length = start-to-end distance; radius = stroke thickness / 2 "
           "(thickness = max(0.06 * stroke length, 12))"),
@@ -732,7 +736,8 @@ _SPECS = [
           (_dim("length", 200.0, "Length along X"), _dim("width", 20.0, "Horizontal width"),
            _dim("depth", 20.0, "Vertical depth")),
           lambda b, p: geo.sweep(b, [(-p["length"] / 2, 0.0), (p["length"] / 2, 0.0)],
-                                 geo.rect_section(p["width"], p["depth"])),
+                                 geo.rect_section(p["width"], p["depth"]),
+                                 closed=False),
           lambda s, _: {"length": s.chord, "width": 2 * s.stroke_radius,
                         "depth": 2 * s.stroke_radius},
           "length = start-to-end distance; width = depth = stroke thickness"),
@@ -748,7 +753,8 @@ _SPECS = [
            _dim("width", 60.0, "Vertical ribbon height"),
            _dim("thickness", 4.0, "Horizontal ribbon thickness"), _ARC_SEGMENTS),
           lambda b, p: geo.sweep(b, geo.arc_path(p["radius"], p["sweep_angle"], p["segments"]),
-                                 geo.rect_section(p["thickness"], p["width"])),
+                                 geo.rect_section(p["thickness"], p["width"]),
+                                 closed=False),
           lambda s, _: (lambda arc: {"radius": arc[0], "sweep_angle": arc[1],
                                      "width": 6.0 * s.stroke_radius,
                                      "thickness": min(0.4 * s.stroke_radius, arc[0])})(

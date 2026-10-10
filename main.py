@@ -24,6 +24,7 @@ from interaction.manipulation     import Manipulation
 from interaction.snapping         import Snapping
 from interaction.recommendation_mode import RecommendationInteractionMode
 from interaction.candidate_placement import CandidatePlacement
+from interaction.workspace_settings import WorkspaceSettings
 from render.hand_mesh              import HandMesh
 from webview_app.application_window import create_application_window
 
@@ -37,6 +38,7 @@ PANEL_H   = 480
 # background thread stops (and releases the webcam) instead of being
 # killed abruptly when the daemon thread dies with the process.
 _stop_event = threading.Event()
+_clear_scene_requested = threading.Event()
 
 tracker          = HandTracker()
 capture          = StrokeCapture()
@@ -46,6 +48,7 @@ renderer         = ThreeJSRenderer(PANEL_W, PANEL_H)
 
 obj_selection    = ObjectSelection(renderer)
 snapping         = Snapping()
+workspace_settings = WorkspaceSettings(snapping, renderer)
 manipulation     = Manipulation(snapping=snapping)
 hand_mesh        = HandMesh()  # 3D hand overlay
 
@@ -93,6 +96,7 @@ def enter_manipulation(obj, scale_only=False):
 def exit_manipulation():
     global manipulating, scale_only_mode
     selected = obj_selection.get_selected()
+    snapping.commit_preview(manipulation.active_object, renderer.objects)
     snapping.cancel_snap(renderer.objects)
     snapping.clear_preview()
     renderer.set_snap_preview(None)
@@ -206,7 +210,7 @@ def process_normal_hand(landmarks, x, y, tilt, swipe, hand_speed,
         elif not capture.is_drawing():
             renderer.set_candidate_recommendation(None)
             candidate_placement.cancel_pending()
-            capture.start_stroke()
+            capture.start_stroke(color=workspace_settings.stroke_color)
         capture.add_point((x, y))
 
     elif (drawing_enabled and not converting and not fist and not index_only
@@ -225,7 +229,7 @@ def process_normal_hand(landmarks, x, y, tilt, swipe, hand_speed,
             manipulation.active_object, renderer.objects
         )
         renderer.set_snap_preview(preview)
-    else:
+    elif not manipulating or open_palm:
         snapping.clear_preview()
         renderer.set_snap_preview(None)
 
@@ -273,6 +277,34 @@ def run_app():
     global pinch_lost_frames, delete_candidate, delete_start_time
 
     while not _stop_event.is_set():
+
+        if _clear_scene_requested.is_set():
+            _clear_scene_requested.clear()
+            if not recommendation_mode.active:
+                candidate_placement.reset()
+                capture.cancel()
+                if manipulating:
+                    manipulation.stop_move()
+                    manipulation.stop_rotate()
+                    manipulation.stop_scale()
+                obj_selection.deselect_all()
+                snapping.cancel_snap(renderer.objects)
+                snapping.clear_preview()
+                renderer.set_snap_preview(None)
+                renderer.clear_objects()
+                renderer.add_object(hand_mesh)
+                renderer.set_candidate_hand_state(None)
+                renderer.set_drawing_state(points=[], drawing_enabled=drawing_enabled,
+                                           cursor=None, near_object=False,
+                                           delete_progress=0.0, hint_visible=True,
+                                           stroke_color=workspace_settings.stroke_color)
+                renderer.set_hud_text(None)
+                converting = False
+                manipulating = False
+                scale_only_mode = False
+                pinch_lost_frames = 0
+                delete_candidate = None
+                delete_start_time = None
 
         frame, landmarks = tracker.get_frame()
 
@@ -355,6 +387,7 @@ def run_app():
             near_object=near_object,
             delete_progress=delete_progress,
             hint_visible=not recommendation_mode_active,
+            stroke_color=(capture.current.color or workspace_settings.stroke_color),
         )
 
         selected = obj_selection.get_selected()
@@ -393,6 +426,31 @@ def _launch_application_and_run():
             candidate_placement.cancel()
             return True
 
+        def clear_scene(self):
+            if recommendation_mode.active:
+                return False
+            _clear_scene_requested.set()
+            return True
+
+        def set_snapping_enabled(self, enabled):
+            if recommendation_mode.active:
+                return snapping.enabled
+            return workspace_settings.set_snapping_enabled(enabled)
+
+        def set_mesh_view(self, enabled):
+            renderer.set_workspace_settings(mesh_view=enabled)
+            return bool(enabled)
+
+        def set_drawing_enabled(self, enabled):
+            global drawing_enabled
+            if recommendation_mode.active:
+                return drawing_enabled
+            drawing_enabled = bool(enabled)
+            return drawing_enabled
+
+        def set_stroke_color(self, color):
+            return workspace_settings.set_stroke_color(color)
+
     api = _Api()
 
     window = create_application_window(
@@ -409,6 +467,7 @@ def _launch_application_and_run():
     # the process exits.
     _stop_event.set()
     worker.join(timeout=2.0)
+    renderer.close_bridge()
 
 
 if __name__ == "__main__":

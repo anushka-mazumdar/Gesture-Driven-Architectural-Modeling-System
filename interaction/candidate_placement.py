@@ -109,6 +109,8 @@ class CandidatePlacement:
             target = getattr(candidate_mesh, transform_name, None)
             if source is not None and target is not None:
                 target[...] = source
+        if getattr(preview, "color", None) is not None:
+            candidate_mesh.color = tuple(preview.color)
         candidate_mesh.shape_class = record.shape_class
         candidate_mesh.highlighted = bool(getattr(preview, "highlighted", False))
 

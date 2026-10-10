@@ -102,16 +102,17 @@ class SnapPreviewTests(unittest.TestCase):
         renderer.set_snap_preview(preview)
         self.assertEqual(renderer._snap_preview["target_anchor_id"], "target-v")
         renderer.render()
-        self.assertTrue(any("receiveSnapPreviewFromPython({" in call
+        self.assertTrue(renderer.wait_for_sync())
+        self.assertTrue(any('"snap_preview": {' in call
+                            and '"target_anchor_id": "target-v"' in call
                             for call in renderer._window.calls))
-        mesh_call = next(call for call in renderer._window.calls
-                         if "receiveMeshesFromPython" in call)
-        self.assertIn("receiveMeshesFromPython([])", mesh_call)
+        self.assertTrue(any('"meshes": {"added": [], "removed": [], "transforms": []}' in call
+                            for call in renderer._window.calls))
         renderer.set_snap_preview(None)
         renderer.render()
+        self.assertTrue(renderer.wait_for_sync())
         self.assertIsNone(renderer._snap_preview)
-        self.assertTrue(any("receiveSnapPreviewFromPython && "
-                            "window.receiveSnapPreviewFromPython(null)" in call
+        self.assertTrue(any('"snap_preview": null' in call
                             for call in renderer._window.calls))
 
 

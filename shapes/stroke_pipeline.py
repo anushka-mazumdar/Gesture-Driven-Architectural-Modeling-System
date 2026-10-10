@@ -85,6 +85,16 @@ class StrokePipeline:
                         # derivation fails for a malformed or degenerate loop.
                         pass
 
+        # Appearance is captured with the stroke, so changing the palette for
+        # a later stroke never recolors already-created scene objects.
+        if mesh is not None and getattr(record, "color", None) is not None:
+            try:
+                color = tuple(float(value) for value in record.color)
+                if len(color) == 3 and all(0.0 <= value <= 1.0 for value in color):
+                    mesh.color = color
+            except (TypeError, ValueError):
+                pass
+
         # preserve + enrich the raw record
         record.points = params.points          # sealed loop when closed
         record.closed = params.closed

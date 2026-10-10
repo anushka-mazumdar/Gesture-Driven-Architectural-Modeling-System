@@ -52,8 +52,8 @@ class SingleWindowIntegrationTests(unittest.TestCase):
         self.assertEqual(len(webview.windows), 1)
         self.assertIs(renderer._window, window)
         self.assertEqual(len(window.events.closing.callbacks), 1)
-        self.assertEqual(webview.windows[0][2]["width"], 1000)
-        self.assertEqual(webview.windows[0][2]["height"], 700)
+        self.assertEqual(webview.windows[0][2]["width"], 1280)
+        self.assertEqual(webview.windows[0][2]["height"], 720)
         markup = Path("webview_app/web/index.html").read_text(encoding="utf-8")
         self.assertIn('id="application-viewport"', markup)
         viewport = markup.split('id="application-viewport"', 1)[1].split("</main>", 1)[0]
@@ -68,6 +68,8 @@ class SingleWindowIntegrationTests(unittest.TestCase):
         page_script = Path("webview_app/web/main.js").read_text(encoding="utf-8")
         self.assertIn("receiveDrawingStateFromPython", page_script)
         self.assertIn("TubeGeometry", page_script)
+        self.assertIn("DynamicDrawUsage", page_script)
+        self.assertIn("receiveFrameFromPython", page_script)
         self.assertNotIn("getContext('2d')", page_script)
 
     def test_draw_recommend_swipe_confirm_then_resume_scene_interaction(self):
@@ -88,6 +90,7 @@ class SingleWindowIntegrationTests(unittest.TestCase):
         renderer.set_drawing_state(points=capture.get_current(),
                                    drawing_enabled=True, cursor=(0.25, 0.3))
         renderer.render()
+        self.assertTrue(renderer.wait_for_sync())
 
         # Run the captured path through the project's actual classifier and
         # mesh factory, observing that the classifier receives the stroke.
@@ -104,6 +107,8 @@ class SingleWindowIntegrationTests(unittest.TestCase):
 
         self.assertEqual(result.candidates.status, "ok")
         renderer.set_candidate_recommendation(result.candidates)
+        renderer.render()
+        self.assertTrue(renderer.wait_for_sync())
         mode = RecommendationInteractionMode(
             renderer, CandidateSwipeGate(settle_seconds=0.1, cooldown_seconds=0.5)
         )
@@ -131,13 +136,14 @@ class SingleWindowIntegrationTests(unittest.TestCase):
         renderer.set_drawing_state(points=[], drawing_enabled=True,
                                    cursor=(0.5, 0.5))
         renderer.render()
+        self.assertTrue(renderer.wait_for_sync())
 
         self.assertIs(renderer._window, window)
         joined_calls = "\n".join(window.js_calls)
-        self.assertIn("receiveDrawingStateFromPython", joined_calls)
+        self.assertIn("receiveFrameFromPython", joined_calls)
         self.assertIn('"points": [[150.0, 130.0]', joined_calls)
-        self.assertIn("receiveMeshesFromPython", joined_calls)
-        self.assertIn("receiveCandidatePanelFromPython", joined_calls)
+        self.assertIn('"meshes": {"added": [{', joined_calls)
+        self.assertIn('"candidate_panel": {"status": "ok"', joined_calls)
 
 
 if __name__ == "__main__":
