@@ -100,6 +100,66 @@ def build_snap_anchors(vertices, indices, tolerance=1e-5):
             tuple(key_to_point[key].tolist()), source_vertices=(key,),
         ))
 
+    # Add semantic centerline endpoints for rods/beams and pointed solids.
+    # Raw mesh vertices on a circular end cap lie around its rim; using those
+    # as connection points makes a rod meet a sphere off-center. Endpoint
+    # anchors instead sit at the center of each axial end (or at a sharp tip).
+    unique_points = np.asarray([key_to_point[key] for key in sorted(key_to_point)],
+                               dtype=float)
+    if len(unique_points) >= 5:
+        centered = unique_points - unique_points.mean(axis=0)
+        covariance = centered.T @ centered / len(centered)
+        values, vectors = np.linalg.eigh(covariance)
+        order = np.argsort(values)
+        chosen_axis = None
+        chosen_ends = []
+        best_point_score = 0.0
+        # Rod axes tend to be the dominant PCA direction. A cone/pyramid may
+        # instead reveal its sharp tip along another principal direction, so
+        # also check the remaining eigenvectors for asymmetric end caps.
+        for axis_index in reversed(order.tolist()):
+            axis = vectors[:, axis_index]
+            largest = max(float(values[axis_index]), 0.0)
+            other = [max(float(values[index]), 0.0)
+                     for index in order.tolist() if index != axis_index]
+            transverse = max(other, default=0.0)
+            axis_ratio = math.sqrt(largest / transverse) if transverse > 1e-12 else math.inf
+            projection = centered @ axis
+            low, high = float(np.min(projection)), float(np.max(projection))
+            span = high - low
+            slice_tolerance = max(tolerance * 4.0, span * 1e-4)
+            end_slices = []
+            for extreme, sign in ((low, -1.0), (high, 1.0)):
+                selected = unique_points[np.abs(projection - extreme) <= slice_tolerance]
+                if not len(selected):
+                    continue
+                point = np.mean(selected, axis=0)
+                spread = float(np.max(np.linalg.norm(selected - point, axis=1)))
+                end_slices.append((sign, point, spread))
+
+            radial_max = max((spread for _, _, spread in end_slices), default=0.0)
+            if axis_ratio >= 2.0 and len(end_slices) == 2:
+                chosen_axis, chosen_ends = axis, end_slices
+                break
+            if len(end_slices) == 2 and radial_max > tolerance * 10.0:
+                small = [item for item in end_slices if item[2] <= radial_max * 0.05]
+                broad = [item for item in end_slices if item[2] >= radial_max * 0.3]
+                if len(small) == 1 and len(broad) == 1:
+                    score = radial_max / max(small[0][2], tolerance)
+                    if score > best_point_score:
+                        best_point_score = score
+                        # Preserve both the sharp tip and the center of its
+                        # broad opposite end so rods can attach at either end
+                        # instead of being pulled diagonally toward the tip.
+                        chosen_axis, chosen_ends = axis, end_slices
+
+        for sign, point, _ in chosen_ends:
+            side = "positive" if sign > 0 else "negative"
+            anchors.append(SnapAnchor(
+                f"endpoint:{side}", "vertex", tuple(point.tolist()),
+                tuple((chosen_axis * sign).tolist()),
+            ))
+
     edge_keys = set()
     triangles = []
     for offset in range(0, len(raw_indices) - 2, 3):

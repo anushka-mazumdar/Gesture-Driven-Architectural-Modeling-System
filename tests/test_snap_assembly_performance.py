@@ -76,6 +76,55 @@ class SnapAssemblyPerformanceTests(unittest.TestCase):
             self.assertEqual(payload["meshes"]["added"], [])
             self.assertEqual(len(payload["meshes"]["transforms"]), len(objects))
 
+    def test_sphere_rod_assembly_repeated_rotation_matches_rendered_transforms(self):
+        sphere, rod = SceneMesh(0), SceneMesh(1)
+        sphere.position[:] = (12.0, -4.0, 3.0)
+        rod.position[:] = (42.0, -4.0, 3.0)
+        rod.rotation[:] = (0.0, 0.0, 0.0)
+        renderer = ThreeJSRenderer()
+        window = RecordingWindow()
+        renderer._window = window
+        renderer._ready = True
+        renderer.add_object(sphere)
+        renderer.add_object(rod)
+        renderer._sync_scene()
+
+        assembly = SnapAssembly(sphere)
+        assembly.add(rod, rod.position - sphere.position)
+        snapping = Snapping(enabled=True)
+        snapping._groups.append(assembly)
+        initial_delta = rod.position.copy() - sphere.position.copy()
+        initial_relative_rotation = (
+            snapping._rotation_matrix(sphere.rotation).T
+            @ snapping._rotation_matrix(rod.rotation)
+        )
+
+        for angle in (17.0, 49.0, -23.0, 91.0, 138.0):
+            sphere.position += np.asarray((1.25, -0.5, 0.75))
+            snapping.propagate_move(sphere, 1.25, -0.5)
+            snapping.propagate_depth(sphere, 0.75)
+            sphere.rotation[:] = (angle * 0.2, angle * -0.15, angle)
+            snapping.propagate_rotate(sphere, 0.0, 0.0)
+            renderer._sync_scene()
+
+            rotation = snapping._rotation_matrix(sphere.rotation)
+            expected_position = sphere.position + rotation @ initial_delta
+            expected_rotation = rotation @ initial_relative_rotation
+            np.testing.assert_allclose(rod.position, expected_position, atol=2e-6)
+            np.testing.assert_allclose(
+                snapping._rotation_matrix(rod.rotation), expected_rotation,
+                atol=2e-6,
+            )
+            payload = frame_payload(window.calls[-1])["meshes"]["transforms"]
+            by_id = {item["id"]: item for item in payload}
+            sphere_id = renderer._bridge_ids[id(sphere)]
+            rod_id = renderer._bridge_ids[id(rod)]
+            np.testing.assert_allclose(by_id[sphere_id]["position"], sphere.position, atol=1e-7)
+            np.testing.assert_allclose(by_id[rod_id]["position"], expected_position, atol=2e-6)
+            np.testing.assert_allclose(by_id[rod_id]["rotation"], rod.rotation, atol=1e-6)
+            self.assertAlmostEqual(float(np.linalg.norm(rod.position - sphere.position)),
+                                   float(np.linalg.norm(initial_delta)), places=5)
+
 
 if __name__ == "__main__":
     unittest.main()

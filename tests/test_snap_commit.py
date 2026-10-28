@@ -5,7 +5,8 @@ from pathlib import Path
 import numpy as np
 
 from interaction.snapping import Snapping
-from render.snap_anchors import SnapAnchor
+from render.snap_anchors import SnapAnchor, transform_point
+from shapes.candidate_constructors import build_candidate
 
 
 def make_mesh(anchors, position=(0, 0, 0), rotation=(0, 0, 0), scale=(1, 1, 1)):
@@ -115,6 +116,169 @@ class SnapCommitTests(unittest.TestCase):
             target.snap_anchors[0].world_position(target), atol=1e-8,
         )
         np.testing.assert_array_equal(moving.scale, (2, 1, 1))
+
+    def _rod_and_sphere(self, rotation=(0, 0, 0)):
+        rod = make_mesh([
+            vertex("endpoint:positive", (50, 0, 0), (50, 0, 0)),
+            vertex("side-vertex", (0, 15, 15), (0, 15, 15)),
+        ],
+                        rotation=rotation)
+        rod.vertices = np.asarray([
+            (-50, 0, 0), (50, 0, 0), (-50, 5, 0), (-50, -5, 0),
+            (50, 5, 0), (50, -5, 0), (-50, 0, 5), (50, 0, 5),
+            (-50, 0, -5), (50, 0, -5),
+        ], dtype=float)
+        sphere = make_mesh([vertex("sphere-surface", (0, 0, 0), (0, 0, 0))],
+                           position=(15, 15, 0))
+        sphere.vertices = np.asarray([
+            (0, 0, 0), (10, 0, 0), (-10, 0, 0), (0, 10, 0),
+            (0, -10, 0), (0, 0, 10), (0, 0, -10),
+        ], dtype=float)
+        return rod, sphere
+
+    def _assert_rod_meets_target_along_its_axis(self, rod, sphere, original_vertices):
+        target_point = sphere.snap_anchors[0].world_position(sphere)
+        endpoint = rod.snap_anchors[0].world_position(rod)
+        np.testing.assert_allclose(endpoint, target_point, atol=1e-8)
+        local_ends = np.asarray([(-50, 0, 0), (50, 0, 0)], dtype=float)
+        from render.snap_anchors import transform_point
+        world_ends = np.asarray([transform_point(rod, point) for point in local_ends])
+        rod_axis = world_ends[1] - world_ends[0]
+        center = world_ends.mean(axis=0)
+        connection_direction = target_point - center
+        rod_axis /= np.linalg.norm(rod_axis)
+        connection_direction /= np.linalg.norm(connection_direction)
+        self.assertGreater(float(np.dot(rod_axis, connection_direction)), 0.999999)
+        np.testing.assert_array_equal(rod.vertices, original_vertices)
+        np.testing.assert_allclose(np.linalg.norm(world_ends[1] - world_ends[0]), 100.0)
+
+    def test_rod_to_sphere_vertex_snap_aligns_axis_and_places_endpoint(self):
+        rod, sphere = self._rod_and_sphere()
+        original_vertices = rod.vertices.copy()
+        original_scale = rod.scale.copy()
+        snapping = self.preview(rod, sphere, "vertex")
+        self.assertEqual(snapping.snap_preview.moving_anchor_id, "endpoint:positive")
+        self.assertTrue(snapping.commit_preview(rod, [rod, sphere]))
+        self._assert_rod_meets_target_along_its_axis(rod, sphere, original_vertices)
+        np.testing.assert_array_equal(rod.scale, original_scale)
+
+    def test_rotated_rod_to_sphere_snap_keeps_length_and_aligns_world_axis(self):
+        rod, sphere = self._rod_and_sphere(rotation=(0, 0, 90))
+        original_vertices = rod.vertices.copy()
+        snapping = self.preview(rod, sphere, "vertex")
+        self.assertEqual(snapping.snap_preview.moving_anchor_id, "endpoint:positive")
+        self.assertTrue(snapping.commit_preview(rod, [rod, sphere]))
+        self._assert_rod_meets_target_along_its_axis(rod, sphere, original_vertices)
+
+    def test_actual_rod_attaches_to_cone_base_not_a_side_face(self):
+        rod = build_candidate("sweep.rod", {"length": 200, "radius": 10})
+        cone = build_candidate("solid.cone")
+        rod.rotation[:] = (0, 0, 90)
+        rod.position[:] = (0, -140, 0)
+        source_end = next(a for a in rod.snap_anchors
+                          if a.anchor_id.startswith("endpoint:")
+                          and a.local_position[0] > 0)
+        cone_base = next(a for a in cone.snap_anchors
+                         if a.anchor_id.startswith("endpoint:")
+                         and a.local_position[1] < 0)
+        source_before = source_end.world_position(rod)
+        target_before = cone_base.world_position(cone)
+        center_before = rod.position.copy()
+        axis_before = transform_point(rod, (100, 0, 0)) - transform_point(rod, (-100, 0, 0))
+        axis_before /= np.linalg.norm(axis_before)
+        target_direction_before = target_before - center_before
+        target_direction_before /= np.linalg.norm(target_direction_before)
+        snapping = Snapping(enabled=True)
+        preview = snapping.preview_nearest_anchors(rod, [rod, cone])
+        self.assertIsNotNone(preview)
+        self.assertEqual(preview.moving_anchor_id, source_end.anchor_id)
+        self.assertEqual(preview.target_anchor_id, cone_base.anchor_id)
+        self.assertEqual(preview.kind, "vertex")
+        self.assertEqual(preview.target_kind, "vertex")
+        self.assertLessEqual(preview.distance, Snapping.ANCHOR_PREVIEW_DISTANCE)
+        np.testing.assert_allclose(preview.moving_position, source_before, atol=1e-5)
+        np.testing.assert_allclose(preview.target_position, target_before, atol=1e-5)
+
+        original_length = float(np.ptp(rod.vertices[:, 0]))
+        rotation_before = rod.rotation.copy()
+        position_before = rod.position.copy()
+        self.assertTrue(snapping.commit_preview(rod, [rod, cone]))
+        committed_end = source_end.world_position(rod)
+        center_after = rod.position.copy()
+        axis_after = transform_point(rod, (100, 0, 0)) - transform_point(rod, (-100, 0, 0))
+        axis_after /= np.linalg.norm(axis_after)
+        target_direction_after = target_before - center_after
+        target_direction_after /= np.linalg.norm(target_direction_after)
+        diagnostic = {
+            "source_anchor": source_end.anchor_id,
+            "target_anchor": cone_base.anchor_id,
+            "source_before": source_before.tolist(),
+            "target_before": target_before.tolist(),
+            "center_before": center_before.tolist(),
+            "center_after": center_after.tolist(),
+            "rotation_before": rotation_before.tolist(),
+            "rotation_after": rod.rotation.tolist(),
+            "axis_before_world": axis_before.tolist(),
+            "target_direction_before": target_direction_before.tolist(),
+            "axis_after_world": axis_after.tolist(),
+            "target_direction_after": target_direction_after.tolist(),
+        }
+        np.testing.assert_allclose(committed_end, target_before, atol=1e-5,
+                                   err_msg=repr(diagnostic))
+        self.assertGreater(float(np.dot(axis_after, target_direction_after)), 0.999,
+                           msg=repr(diagnostic))
+        self.assertAlmostEqual(float(np.ptp(rod.vertices[:, 0])), original_length, places=5,
+                               msg=repr(diagnostic))
+        np.testing.assert_array_equal(rod.scale, (1, 1, 1))
+
+    def test_actual_rod_attaches_to_sphere_surface_without_tilting_or_shrinking(self):
+        rod = build_candidate("sweep.rod", {"length": 200, "radius": 10})
+        sphere = build_candidate("solid.sphere", {"radius": 50})
+        rod.position[:] = (120, 0, 0)
+        source_end = next(a for a in rod.snap_anchors
+                          if a.anchor_id.startswith("endpoint:")
+                          and a.local_position[0] < 0)
+        snapping = Snapping(enabled=True)
+        preview = snapping.preview_nearest_anchors(rod, [rod, sphere])
+        self.assertIsNotNone(preview)
+        self.assertEqual(preview.moving_anchor_id, source_end.anchor_id)
+        self.assertIn(preview.target_kind, {"vertex", "edge", "face"})
+        target_anchor = next(a for a in sphere.snap_anchors
+                             if a.kind == preview.target_kind
+                             and a.anchor_id == preview.target_anchor_id)
+        target_world = target_anchor.world_position(sphere)
+        preview_record = {
+            "moving_anchor_id": preview.moving_anchor_id,
+            "target_anchor_id": preview.target_anchor_id,
+            "rod_position_before": rod.position.tolist(),
+            "rod_rotation_before": rod.rotation.tolist(),
+            "source_world_before": list(preview.moving_position),
+            "target_world": target_world.tolist(),
+        }
+        initial_length = float(np.ptp(rod.vertices[:, 0]))
+        self.assertTrue(snapping.commit_preview(rod, [rod, sphere]),
+                        msg=repr(preview_record))
+        moved_end = source_end.world_position(rod)
+        np.testing.assert_allclose(moved_end, target_world, atol=1e-5,
+                                   err_msg=repr(preview_record))
+        world_ends = np.asarray([
+            transform_point(rod, (-100, 0, 0)),
+            transform_point(rod, (100, 0, 0)),
+        ])
+        center = world_ends.mean(axis=0)
+        endpoint_direction = moved_end - center
+        endpoint_direction /= np.linalg.norm(endpoint_direction)
+        target_direction = target_world - center
+        target_direction /= np.linalg.norm(target_direction)
+        diagnostic = {**preview_record,
+                      "rod_position_after": rod.position.tolist(),
+                      "rod_rotation_after": rod.rotation.tolist(),
+                      "axis_toward_endpoint": endpoint_direction.tolist(),
+                      "target_direction_after": target_direction.tolist()}
+        self.assertGreater(float(np.dot(endpoint_direction, target_direction)), 0.999,
+                           msg=repr(diagnostic))
+        self.assertAlmostEqual(float(np.ptp(rod.vertices[:, 0])), initial_length, places=5,
+                               msg=repr(diagnostic))
 
     def test_disabled_or_missing_preview_does_nothing(self):
         moving = make_mesh([vertex("move", (0, 0, 0), (0, 0, 0))])

@@ -72,6 +72,14 @@ class SingleWindowIntegrationTests(unittest.TestCase):
         self.assertIn("receiveFrameFromPython", page_script)
         self.assertNotIn("getContext('2d')", page_script)
 
+    def test_escape_only_cancels_recommendations_and_ctrl_q_exits(self):
+        page_script = Path("webview_app/web/main.js").read_text(encoding="utf-8")
+        escape_logic = page_script.split("handleEscapeKey(event, {", 1)[1].split("});", 1)[0]
+        self.assertIn("cancel_candidate_panel", escape_logic)
+        self.assertNotIn("api?.exit", escape_logic)
+        self.assertIn("event.key.toLowerCase() === 'q'", page_script)
+        self.assertIn("document.getElementById('exit-btn').addEventListener('click'", page_script)
+
     def test_draw_recommend_swipe_confirm_then_resume_scene_interaction(self):
         webview = FakeWebview()
         renderer = ThreeJSRenderer()

@@ -77,6 +77,62 @@ class SnapAssemblyTests(unittest.TestCase):
         self.assertEqual({id(member) for member in self.snapping.assemblies[0].members},
                          {id(self.first), id(self.second), id(third), id(fourth)})
 
+    def test_detach_two_object_assembly_preserves_detached_world_transform(self):
+        snap_into(self.snapping, self.second, self.first, self.objects)
+        before = SnapAssembly._state(self.second)
+
+        self.assertTrue(self.snapping.detach_object(self.second))
+
+        self.assertIsNone(self.snapping.get_group(self.second))
+        self.assertIsNone(self.snapping.get_group(self.first))
+        self.assertEqual(self.snapping.assemblies, ())
+        np.testing.assert_array_equal(self.second.position, before["position"])
+        np.testing.assert_array_equal(self.second.rotation, before["rotation"])
+        np.testing.assert_array_equal(self.second.scale, before["scale"])
+        self.assertTrue(self.snapping.detach_object(self.second) is False)
+
+    def test_detach_middle_member_keeps_remaining_assembly_and_world_transforms(self):
+        third = make_object("c", anchor_point=(-10, 0, 0), position=(35, 4, 2),
+                            rotation=(10, 20, 30), scale=(1.5, 1.5, 1.5))
+        self.objects.append(third)
+        snap_into(self.snapping, self.second, self.first, self.objects)
+        snap_into(self.snapping, third, self.second, self.objects)
+        assembly = self.snapping.assemblies[0]
+        before = {id(member): SnapAssembly._state(member)
+                  for member in assembly.members}
+
+        self.assertTrue(self.snapping.detach_object(id(self.second)))
+
+        remaining = self.snapping.assemblies
+        self.assertEqual(len(remaining), 1)
+        self.assertEqual(remaining[0].members, [self.first, third])
+        self.assertIsNone(self.snapping.get_group(self.second))
+        for member in (self.first, self.second, third):
+            state = before[id(member)]
+            np.testing.assert_array_equal(member.position, state["position"])
+            np.testing.assert_array_equal(member.rotation, state["rotation"])
+            np.testing.assert_array_equal(member.scale, state["scale"])
+
+        # The remaining pair still follows a shared transform after detach.
+        initial_offset = third.position - self.first.position
+        self.first.rotation[2] += 35.0
+        self.snapping.propagate_rotate(self.first, 0.0, 35.0)
+        expected = self.snapping._rotation_matrix((0.0, 0.0, 35.0)) @ initial_offset
+        np.testing.assert_allclose(third.position - self.first.position,
+                                   expected, atol=1e-6)
+
+    def test_detach_is_idempotent_handles_invalid_ids_and_works_when_disabled(self):
+        snap_into(self.snapping, self.second, self.first, self.objects)
+        self.snapping.enabled = False
+
+        self.assertFalse(self.snapping.detach_object(-1))
+        self.assertFalse(self.snapping.detach_object("not-an-object-id"))
+        self.assertFalse(self.snapping.detach_object(object()))
+        self.assertTrue(self.snapping.detach_object(id(self.second)))
+        self.assertFalse(self.snapping.detach_object(id(self.second)))
+        # The legacy gesture wrapper remains gated when snapping is disabled.
+        self.assertFalse(self.snapping.detach(self.first))
+
     def test_movement_preserves_member_offsets(self):
         snap_into(self.snapping, self.second, self.first, self.objects)
         before = self.second.position - self.first.position

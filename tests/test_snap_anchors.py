@@ -57,6 +57,22 @@ class SnapAnchorTests(unittest.TestCase):
                 self.assertTrue(any(anchor.kind == "edge" for anchor in mesh.snap_anchors))
                 self.assertTrue(any(anchor.kind == "face" for anchor in mesh.snap_anchors))
 
+    def test_axial_endpoint_anchors_for_rods_and_both_cone_ends(self):
+        rod = build_candidate("sweep.rod", {"length": 200, "radius": 10})
+        cone = build_candidate("solid.cone", {"radius": 50, "height": 100})
+        sphere = build_candidate("solid.sphere", {"radius": 50})
+        rod_ends = [anchor for anchor in rod.snap_anchors
+                    if anchor.anchor_id.startswith("endpoint:")]
+        cone_ends = [anchor for anchor in cone.snap_anchors
+                     if anchor.anchor_id.startswith("endpoint:")]
+        sphere_ends = [anchor for anchor in sphere.snap_anchors
+                       if anchor.anchor_id.startswith("endpoint:")]
+        self.assertEqual(len(rod_ends), 2)
+        self.assertEqual(len(cone_ends), 2)
+        self.assertEqual(len(sphere_ends), 0)
+        cone_end_y = sorted(anchor.local_position[1] for anchor in cone_ends)
+        np.testing.assert_allclose(cone_end_y, (-50.0, 50.0), atol=1e-4)
+
     def test_world_anchor_positions_follow_scale_rotation_and_translation(self):
         anchor = next(anchor for anchor in build_snap_anchors(VERTICES, TETRA_FACES)
                       if anchor.kind == "vertex" and anchor.local_position == (2, 0, 0))

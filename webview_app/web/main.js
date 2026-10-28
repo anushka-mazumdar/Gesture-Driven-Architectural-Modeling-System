@@ -1,5 +1,5 @@
 import * as THREE from './vendor/three.module.min.js';
-import { createCandidatePanelController } from './candidate_panel.mjs';
+import { createCandidatePanelController, handleEscapeKey } from './candidate_panel.mjs';
 
 // ---- Scene setup -----------------------------------------------------------
 
@@ -168,60 +168,75 @@ drawingPreviewGroup.add(cursorRing, cursorDot);
 const snapPreviewGroup = new THREE.Group();
 scene.add(snapPreviewGroup);
 const snapPreviewHud = document.getElementById('snap-preview-hud');
+let snapPreviewKey = null;
+const snapPreviewMarkers = [];
+for (const [radius, halo] of [[5, false], [5, true], [8, false], [8, true]]) {
+  const material = new THREE.MeshBasicMaterial({
+    color: 0x64dcff, depthTest: false, depthWrite: false,
+    transparent: true, opacity: halo ? 0.58 : 0.92, wireframe: halo,
+  });
+  const marker = new THREE.Mesh(
+    new THREE.SphereGeometry(halo ? radius * 1.55 : radius, 16, 12), material
+  );
+  // Keep snap anchor indicators in the preview layer for reuse, but do not
+  // draw the blue anchor spheres over the modeled shapes.
+  marker.visible = false;
+  marker.renderOrder = halo ? 29 : 30;
+  snapPreviewGroup.add(marker);
+  snapPreviewMarkers.push(marker);
+}
+const snapPreviewPositions = new Float32Array(6);
+const snapPreviewGeometry = new THREE.BufferGeometry();
+snapPreviewGeometry.setAttribute('position',
+  new THREE.BufferAttribute(snapPreviewPositions, 3).setUsage(THREE.DynamicDrawUsage));
+const snapPreviewConnector = new THREE.Line(
+  snapPreviewGeometry,
+  new THREE.LineDashedMaterial({
+    color: 0x8be7ff, dashSize: 5, gapSize: 3,
+    transparent: true, opacity: 0.95, depthTest: false,
+  })
+);
+snapPreviewConnector.renderOrder = 31;
+snapPreviewGroup.add(snapPreviewConnector);
+snapPreviewGroup.visible = false;
 
 function clearSnapPreview() {
-  for (const child of snapPreviewGroup.children.slice()) {
-    snapPreviewGroup.remove(child);
-    child.geometry?.dispose();
-    if (Array.isArray(child.material)) child.material.forEach((item) => item.dispose());
-    else child.material?.dispose();
-  }
+  snapPreviewGroup.visible = false;
+  snapPreviewKey = null;
 }
 
 // This layer is deliberately independent of liveSceneGroup: it visualizes a
 // possible connection but never changes either object's transform.
 window.receiveSnapPreviewFromPython = function (preview) {
-  clearSnapPreview();
   if (!preview || !Array.isArray(preview.moving_position)
-      || !Array.isArray(preview.target_position)) {
+      || !Array.isArray(preview.target_position)
+      || preview.moving_position.length !== 3 || preview.target_position.length !== 3) {
+    clearSnapPreview();
     if (snapPreviewHud) snapPreviewHud.hidden = true;
     return;
   }
 
-  const moving = new THREE.Vector3(...preview.moving_position);
-  const target = new THREE.Vector3(...preview.target_position);
-  for (const [point, radius] of [[moving, 5], [target, 8]]) {
-    const marker = new THREE.Mesh(
-      new THREE.SphereGeometry(radius, 16, 12),
-      new THREE.MeshBasicMaterial({
-        color: 0x64dcff, depthTest: false, depthWrite: false,
-        transparent: true, opacity: 0.92,
-      })
-    );
-    marker.position.copy(point);
-    marker.renderOrder = 30;
-    snapPreviewGroup.add(marker);
-    const halo = new THREE.Mesh(
-      new THREE.SphereGeometry(radius * 1.55, 16, 12),
-      new THREE.MeshBasicMaterial({
-        color: 0x64dcff, wireframe: true, transparent: true,
-        opacity: 0.58, depthTest: false, depthWrite: false,
-      })
-    );
-    halo.position.copy(point);
-    halo.renderOrder = 29;
-    snapPreviewGroup.add(halo);
+  const values = [...preview.moving_position, ...preview.target_position];
+  if (!values.every(Number.isFinite)) {
+    clearSnapPreview();
+    if (snapPreviewHud) snapPreviewHud.hidden = true;
+    return;
   }
-  const connector = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([moving, target]),
-    new THREE.LineDashedMaterial({
-      color: 0x8be7ff, dashSize: 5, gapSize: 3,
-      transparent: true, opacity: 0.95, depthTest: false,
-    })
-  );
-  connector.computeLineDistances();
-  connector.renderOrder = 31;
-  snapPreviewGroup.add(connector);
+  const key = JSON.stringify([preview.moving_anchor_id, preview.target_anchor_id,
+    preview.kind, values]);
+  snapPreviewGroup.visible = true;
+  if (key !== snapPreviewKey) {
+    snapPreviewKey = key;
+    const [mx, my, mz, tx, ty, tz] = values;
+    snapPreviewMarkers[0].position.set(mx, my, mz);
+    snapPreviewMarkers[1].position.set(mx, my, mz);
+    snapPreviewMarkers[2].position.set(tx, ty, tz);
+    snapPreviewMarkers[3].position.set(tx, ty, tz);
+    snapPreviewPositions.set(values);
+    snapPreviewGeometry.attributes.position.needsUpdate = true;
+    snapPreviewGeometry.computeBoundingSphere();
+    snapPreviewConnector.computeLineDistances();
+  }
 
   if (snapPreviewHud) {
     const kind = typeof preview.kind === 'string' ? preview.kind : 'anchor';
@@ -384,8 +399,9 @@ window.receiveDrawingStateFromPython = function (state) {
 };
 
 // Display-only candidate list supplied by the shared Recommendation API.
+const candidatePanelRoot = document.getElementById('candidate-panel');
 const candidatePanel = createCandidatePanelController(
-  document.getElementById('candidate-panel'),
+  candidatePanelRoot,
   {
     onConfirm(candidateId) {
       const confirmCandidate = window.pywebview?.api?.confirm_candidate;
@@ -540,13 +556,21 @@ document.querySelectorAll('.color-swatch').forEach((swatch) => {
 
 const workspaceSearch = document.getElementById('workspace-search-input');
 window.addEventListener('keydown', (event) => {
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'q') {
+    event.preventDefault();
+    window.pywebview?.api?.exit?.();
+    return;
+  }
   if (event.key === '/' && !event.target.matches('input, textarea')) {
     event.preventDefault();
     workspaceSearch?.focus();
   }
-  if (event.key === 'Escape' && document.activeElement === workspaceSearch) {
-    workspaceSearch.blur();
-  }
+  handleEscapeKey(event, {
+    recommendationOpen: Boolean(candidatePanelRoot && !candidatePanelRoot.hidden),
+    onCancel: () => window.pywebview?.api?.cancel_candidate_panel?.(),
+    searchInput: workspaceSearch,
+    activeElement: document.activeElement,
+  });
 });
 
 // ---- Tracked-hand overlay --------------------------------------------------
@@ -675,17 +699,10 @@ window.receiveFrameFromPython = function (frame) {
 
 // ---- UI --------------------------------------------------------------------
 
-// Exit button → Python closes the pywebview window (which lets the app
-// loop stop and release the webcam cleanly).
+// The title-bar-style close control is the explicit application exit action.
 document.getElementById('exit-btn').addEventListener('click', () => {
   if (window.pywebview && window.pywebview.api && window.pywebview.api.exit) {
     window.pywebview.api.exit();
-  }
-});
-
-window.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') {
-    window.pywebview?.api?.exit?.();
   }
 });
 

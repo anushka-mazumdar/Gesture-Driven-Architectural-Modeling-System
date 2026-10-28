@@ -1,6 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createCandidatePanelController } from '../webview_app/web/candidate_panel.mjs';
+import {
+  createCandidatePanelController,
+  handleEscapeKey,
+} from '../webview_app/web/candidate_panel.mjs';
 
 class FakeElement {
   constructor(tagName, ownerDocument) {
@@ -197,4 +200,46 @@ test('cancel control dismisses candidates through the application callback', () 
     candidates: [{ id: 'tetrahedron', label: 'Tetrahedron' }] });
   root.children[0].children[2].click();
   assert.equal(cancellations, 1);
+});
+
+test('Escape cancels an open recommendation without requesting application exit', () => {
+  let cancellations = 0;
+  let exits = 0;
+  let prevented = false;
+  let stopped = false;
+  const handled = handleEscapeKey({
+    key: 'Escape',
+    preventDefault() { prevented = true; },
+    stopPropagation() { stopped = true; },
+  }, {
+    recommendationOpen: true,
+    onCancel() { cancellations += 1; },
+    onExit() { exits += 1; },
+  });
+  assert.equal(handled, true);
+  assert.equal(cancellations, 1);
+  assert.equal(exits, 0);
+  assert.equal(prevented, true);
+  assert.equal(stopped, true);
+});
+
+test('Escape blurs workspace search but leaves the application alone otherwise', () => {
+  let blurred = 0;
+  let exits = 0;
+  const search = { blur() { blurred += 1; } };
+  assert.equal(handleEscapeKey({ key: 'Escape' }, {
+    recommendationOpen: false,
+    searchInput: search,
+    activeElement: search,
+    onExit() { exits += 1; },
+  }), true);
+  assert.equal(blurred, 1);
+  assert.equal(exits, 0);
+  assert.equal(handleEscapeKey({ key: 'Escape' }, {
+    recommendationOpen: false,
+    searchInput: search,
+    activeElement: null,
+    onExit() { exits += 1; },
+  }), false);
+  assert.equal(exits, 0);
 });

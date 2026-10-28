@@ -1,177 +1,107 @@
-# ✋ Gesture-Driven 3D Architectural Modeling System
+# Gesture-Driven Architectural Modeling System
 
-A real-time, gesture-controlled 3D modeling environment that enables users to sketch, generate, and manipulate 3D objects using only hand movements captured via a webcam.
+A desktop 3D modeling workspace controlled by hand gestures. Sketch a shape in front of a webcam, review shape-based 3D recommendations, and place, transform, and connect the resulting geometry in a live Three.js scene.
 
----
+The application is built with Python for camera tracking, gesture interpretation, sketch processing, and geometry; a pywebview window hosts the workspace UI and Three.js renderer.
 
-## 🚀 Overview
+## Features
 
-This project replaces traditional input devices (mouse/keyboard) with **intuitive hand gestures**, allowing users to:
+- **Webcam hand tracking:** MediaPipe Tasks tracks one hand and supplies landmarks to the gesture and rendering pipeline. The application mirrors a 640 × 480 camera image for interaction.
+- **Freehand drawing:** Enable drawing with an open palm, then trace with the index finger. Stroke capture smooths and normalizes input before classifying it as an open path or closed shape.
+- **Shape recognition:** A bundled Random Forest classifier recognizes circle, ellipse, triangle, square, rectangle, pentagon, and hexagon sketches. The shape taxonomy also defines larger open- and closed-stroke categories for recommendation and geometry workflows.
+- **3D recommendations:** After a stroke is classified, the workspace presents a searchable, swipe-navigable carousel of candidate 3D forms. Hover the tracked hand over a candidate with a fist for one second to confirm it. Candidate geometry is built from the captured sketch where a constructor is implemented.
+- **Object manipulation:** Use a peace sign over an object to select and manipulate it. Hand position moves it, wrist tilt rotates it, finger spread scales it, and vertical swipes adjust depth. A fast hand movement can detach an object from its snap assembly.
+- **Anchor snapping and assemblies:** Optional snapping previews nearby compatible vertex, edge, and face anchors while manipulating. Releasing the manipulation commits the preview into a logical assembly; connected objects remain individually rendered and move together as an assembly.
+- **Workspace controls:** Choose a stroke color, switch mesh/wireframe view, enable snapping, search candidates, and clear the scene. Touch input is shown as a future option and is not connected.
+- **3D hand visualization:** A tracked hand mesh is rendered in the scene as a visual aid.
 
-* Draw 2D strokes in air
-* Convert sketches into 3D geometry
-* Manipulate objects in real time
-* Visualize hand motion using a holographic mesh overlay
+## Requirements
 
-Built using **Computer Vision + OpenGL**, the system focuses on responsiveness, stability, and clean interaction design.
+- Python with the packages listed in [`requirements.txt`](requirements.txt)
+- A webcam
+- Windows desktop is the primary target (camera capture requests DirectShow first)
 
----
+The MediaPipe hand-landmarker model is included at `models/hand_landmarker.task`. If MediaPipe or the model is unavailable, the tracker falls back to a mock landmark source, but a webcam is still needed to provide frames.
 
-## 🧠 Core Features
+## Run
 
-### ✍️ Gesture-Based Drawing
+From the project directory, create and activate a virtual environment, install the dependencies, and launch the app:
 
-* Draw using **index finger**
-* Smooth stroke interpolation with jitter filtering
-* Automatic stroke completion and cleanup
-
----
-
-### 🧊 3D Shape Generation
-
-* Open strokes → **Ribbon (tube) meshes**
-* Closed strokes → **Extruded polygon meshes**
-* Dynamic scaling based on stroke dimensions
-
----
-
-### 🎮 Real-Time Object Manipulation
-
-Controlled via **peace sign gesture**:
-
-* Move → Hand position
-* Rotate → Wrist tilt
-* Scale → Finger spread
-* Depth → Swipe gestures
-
----
-
-### 🧲 Snap-Ready Architecture
-
-* Supports **group-based snapping system**
-* Transformation propagation across grouped objects
-* Currently disabled for clean independent interaction
-
----
-
-### ✋ Holographic Hand Mesh Overlay
-
-* Real-time **wireframe hand visualization**
-* Based on 21 landmark points
-* Styled as a **sci-fi holographic mesh**
-* Positioned as a non-intrusive bottom-right overlay
-* Completely independent from gesture detection logic
-
----
-
-### 🧠 Gesture Intelligence Layer
-
-* Gesture stabilization (buffer-based)
-* Cooldown system to prevent flickering
-* Hold detection for intentional actions (e.g., delete)
-
----
-
-### ❌ Delete Mechanism
-
-* Hold **fist over object** for 1 second
-* Visual progress feedback
-* Safe exclusion of hand mesh from deletion
-
----
-
-## 🏗️ Project Structure
-
-```
-Gesture-Driven-Architectural-Modeling-System/
-│
-├── gestures/        # Gesture detection, stabilization, state logic
-├── interaction/     # Object selection, manipulation, snapping
-├── render/          # OpenGL renderer + hand mesh
-├── shapes/          # Stroke processing + 3D mesh generation
-├── sketch/          # Drawing panel UI
-├── vision/          # Hand tracking + landmark utilities
-│
-└── main.py          # Main application loop
+```powershell
+py -m venv .venv
+.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python main.py
 ```
 
----
+Allow camera access when prompted. The app opens one resizable workspace window containing the control panel and 3D viewport.
 
-## ⚙️ Tech Stack
+## Gesture controls
 
-* **Python**
-* **OpenCV** (camera + UI)
-* **MediaPipe** (hand tracking)
-* **OpenGL (PyOpenGL)** (3D rendering)
-* **NumPy** (math + geometry)
+| Hand action | Result |
+| --- | --- |
+| Hold an open palm for about 1.5 seconds | Enable drawing |
+| Index finger only | Draw a stroke while drawing is enabled |
+| Stop drawing | Finish the stroke and open its recommendation carousel when classification succeeds |
+| Swipe left or right while the carousel is open | Browse candidate forms |
+| Hold a fist over the selected candidate for 1 second | Confirm the candidate |
+| Peace sign over an existing object | Select and manipulate the object |
+| Move the hand while manipulating | Move the object |
+| Tilt the wrist / change finger spread | Rotate / scale the object |
+| Swipe up or down while manipulating | Adjust object depth |
+| Hold a fist over an object for 1 second | Delete the object |
 
----
+The recommendation panel takes ownership of hand input while it is open, so drawing and scene manipulation do not run at the same time as candidate navigation or confirmation.
 
-## 🎯 Gesture Mapping
+## Project layout
 
-| Gesture     | Action                |
-| ----------- | --------------------- |
-| Index Only  | Draw                  |
-| Peace Sign  | Manipulate Object     |
-| Open Palm   | Activate Panel / Exit |
-| Fist (Hold) | Delete Object         |
-| Swipe       | Depth Control         |
+```text
+.
+├── main.py                    # Application startup and camera/gesture loop
+├── webview_app/                # Single-window UI, styles, and Three.js client
+├── vision/                     # MediaPipe tracking and landmark helpers
+├── gestures/                   # Gesture recognition, stabilization, and timing
+├── sketch/                     # Sketch-related UI and support code
+├── shapes/                     # Stroke pipeline, taxonomy, recommendations, geometry
+├── interaction/                # Selection, manipulation, placement, and snapping
+├── render/                     # Three.js bridge, meshes, anchors, and hand rendering
+├── models/                     # Hand landmark asset and trained shape classifiers
+├── dataset/                     # Collected strokes, processed data, and ML splits
+├── tools/                       # Dataset, training, and evaluation utilities
+├── evaluation/                  # Saved classifier comparisons and metrics
+└── tests/                       # Unit and integration coverage
+```
 
----
+## Shape-classifier evaluation
 
-## 🧪 Key Design Decisions
+The bundled final Random Forest was trained on 282 samples and evaluated on a held-out test split of 61 samples. The saved evaluation reports **98.36% test accuracy** and **0.984 macro F1** across the seven supported classifier labels. These are results on this project’s recorded dataset; they do not guarantee the same accuracy for new users, cameras, or drawing conditions. Details are in [`evaluation/shape_random_forest_final_test_results.json`](evaluation/shape_random_forest_final_test_results.json) and model metadata in [`models/shape_random_forest_final_metadata.json`](models/shape_random_forest_final_metadata.json).
 
-* ❌ Removed complex mesh blending → improved stability
-* ❌ Disabled auto-snapping → better user control
-* ✅ Prioritized **clean architecture over visual gimmicks**
-* ✅ Simplified hand mesh for real-time performance
+## Data and model workflow
 
----
+The `tools/` directory contains scripts to collect strokes, preprocess and split data, build ML feature sets, train classifiers, and evaluate results. For example:
 
-## ⚠️ Known Limitations
+```powershell
+python tools/build_ml_dataset.py
+python tools/train_final_random_forest.py
+python tools/evaluate_shape_classifier.py
+```
 
-* No physics-based interaction
-* Approximate depth perception
-* Gesture ambiguity in extreme lighting
-* Hand mesh is wireframe (not full surface mesh)
+Review each script's command-line options before running it. Training or dataset-building commands may regenerate files under `dataset/`, `models/`, or `evaluation/`.
 
----
+## Current scope and limitations
 
-## 🔮 Future Improvements
+- The UI is a desktop pywebview application; touch mode is not implemented.
+- The shape classifier’s final evaluated model covers seven closed-shape labels. Open strokes and additional polygon types are handled by the broader stroke-processing and taxonomy code, but should not be read as extra labels in that reported classifier score.
+- The taxonomy contains more candidate forms than the set of constructors necessarily supports. The geometry constructor code is the source of truth for which recommendations can currently produce a distinct mesh.
+- Hand tracking and gesture reliability depend on camera quality, lighting, hand visibility, and the user’s drawing motion.
+- Scene interaction is gesture-based; the viewport is not a general-purpose mouse-driven CAD editor.
 
-* Shader-based glow / bloom effects
-* True surface mesh hand (triangulated)
-* Multi-hand interaction
-* ML-based gesture classification
-* Physics-based snapping
+## Development checks
 
----
+The repository includes Python and JavaScript tests under `tests/` and smoke scripts under `scripts/`. Run an individual test with:
 
-## 🏁 Status
+```powershell
+python -m pytest tests/test_candidate_placement.py
+```
 
-✅ Core system stable
-✅ Gesture pipeline optimized
-✅ Hand mesh rendering finalized
-
-🚧 Future work focuses on realism and UX enhancements
-
----
-
-## 📸 Demo (optional)
-
-*Add screenshots / demo GIFs here*
-
----
-
-## 📌 Author Notes
-
-This project evolved through multiple iterations focusing on:
-
-* Stability over complexity
-* Real-time responsiveness
-* Clean interaction design
-
-The final system reflects a **minimal, performant, and extensible architecture** for gesture-driven 3D interaction.
-
----
-
+Some test files exercise the JavaScript candidate panel with Node.js. The test suite is not run as part of the application startup.

@@ -1,4 +1,24 @@
 /** Horizontal, display-only carousel for shared recommendation results. */
+export function handleEscapeKey(event, {
+  recommendationOpen = false,
+  onCancel,
+  searchInput = null,
+  activeElement = null,
+} = {}) {
+  if (event?.key !== 'Escape') return false;
+  if (recommendationOpen) {
+    event.preventDefault?.();
+    event.stopPropagation?.();
+    onCancel?.();
+    return true;
+  }
+  if (searchInput && activeElement === searchInput) {
+    searchInput.blur?.();
+    return true;
+  }
+  return false;
+}
+
 export function createCandidatePanelController(root, { onConfirm, onCancel, onSearch } = {}) {
   let rosterKey = null;
   let cards = [];

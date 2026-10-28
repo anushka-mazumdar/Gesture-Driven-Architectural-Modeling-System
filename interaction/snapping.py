@@ -1,6 +1,7 @@
 import numpy as np
 import math
 from dataclasses import dataclass
+from scipy.spatial import cKDTree
 
 
 @dataclass(frozen=True)
@@ -15,12 +16,16 @@ class SnapPreview:
     moving_position: tuple
     target_position: tuple
     distance: float
+    moving_signature: tuple = None
+    target_signature: tuple = None
+    target_kind: str = None
 
     def to_dict(self):
         return {
             "moving_anchor_id": self.moving_anchor_id,
             "target_anchor_id": self.target_anchor_id,
             "kind": self.kind,
+            "target_kind": self.target_kind or self.kind,
             "moving_position": list(self.moving_position),
             "target_position": list(self.target_position),
             "distance": self.distance,
@@ -39,6 +44,22 @@ class SnapAssembly:
         self.members = [anchor]                # anchor is always index-0
         self.offsets = {id(anchor): np.zeros(3, dtype=np.float32)}
         self._last_states = {id(anchor): self._state(anchor)}
+        # Stable transforms in the assembly anchor's local coordinate space.
+        # These are captured when membership changes, not every frame, so
+        # repeated rotations never accumulate member-to-member drift.
+        self._relative_transforms = {id(anchor): self._relative_state(anchor)}
+
+    def _relative_state(self, obj):
+        anchor_state = self._state(self.anchor)
+        member_state = self._state(obj)
+        anchor_rotation = anchor_state["rotation_matrix"]
+        anchor_scale = anchor_state["scale"]
+        safe_scale = np.where(np.abs(anchor_scale) > 1e-12, anchor_scale, 1.0)
+        return {
+            "position": anchor_rotation.T @ (member_state["position"] - anchor_state["position"]) / safe_scale,
+            "rotation": anchor_rotation.T @ member_state["rotation_matrix"],
+            "scale": member_state["scale"] / safe_scale,
+        }
 
     @staticmethod
     def _state(obj):
@@ -61,8 +82,10 @@ class SnapAssembly:
             self.members.append(obj)
             self.offsets[id(obj)] = np.array(offset, dtype=np.float32)
             self._last_states[id(obj)] = self._state(obj)
+            self._relative_transforms[id(obj)] = self._relative_state(obj)
 
     def remove(self, obj):
+        promoted_anchor = False
         if obj is self.anchor and len(self.members) > 1:
             # promote next member as new anchor, rebase offsets
             new_anchor = self.members[1]
@@ -72,10 +95,18 @@ class SnapAssembly:
                 new_offsets[id(m)] = self.offsets[id(m)] - base_off
             self.offsets = new_offsets
             self.anchor  = new_anchor
+            promoted_anchor = True
 
         self.members  = [m for m in self.members if m is not obj]
         self.offsets.pop(id(obj), None)
         self._last_states.pop(id(obj), None)
+        self._relative_transforms.pop(id(obj), None)
+        if promoted_anchor and self.members:
+            # Membership removal promoted a new anchor; express every
+            # remaining member relative to that new stable pivot.
+            self._relative_transforms = {
+                id(member): self._relative_state(member) for member in self.members
+            }
         self.remember_transforms()
 
     def sync_to_anchor(self):
@@ -113,6 +144,94 @@ class Snapping:
         self.snap_candidate = None   # (moving_obj, target_obj, snap_pos)
         self._groups        = []     # list[SnapGroup]
         self.snap_preview   = None
+        # World-space anchors and the target grid survive frame-to-frame
+        # manipulation. Signatures cheaply detect transforms/anchor changes.
+        self._world_anchor_cache = {}
+        self._spatial_cache_key = None
+        self._spatial_cache = {}
+        self.preview_stats = {"cache_hits": 0, "cache_rebuilds": 0,
+                              "spatial_rebuilds": 0, "candidates_checked": 0}
+
+    @staticmethod
+    def _anchor_signature(obj, anchors):
+        def vector(value, default):
+            try:
+                result = np.asarray(value, dtype=float).reshape(3)
+            except (TypeError, ValueError):
+                result = np.asarray(default, dtype=float)
+            return tuple(float(x) for x in result)
+        source = getattr(obj, "snap_anchors", ())
+        geometry = (id(source), len(anchors),
+                    id(source) if isinstance(source, tuple) else hash(anchors))
+        return (vector(getattr(obj, "position", (0, 0, 0)), (0, 0, 0)),
+                vector(getattr(obj, "rotation", (0, 0, 0)), (0, 0, 0)),
+                vector(getattr(obj, "scale", (1, 1, 1)), (1, 1, 1)),
+                id(anchors), geometry)
+
+    def _world_anchors(self, obj):
+        anchors = tuple(getattr(obj, "snap_anchors", ()) or ())
+        signature = self._anchor_signature(obj, anchors)
+        cached = self._world_anchor_cache.get(id(obj))
+        if cached is not None and cached[0] is obj and cached[1] == signature:
+            self.preview_stats["cache_hits"] += 1
+            return cached[2], signature
+
+        position = np.asarray(signature[0], dtype=float)
+        rotation = self._rotation_matrix(signature[1])
+        scale = np.asarray(signature[2], dtype=float)
+        records = {}
+        for anchor in anchors:
+            local = np.asarray(anchor.local_position, dtype=float)
+            world = rotation @ (local * scale) + position
+            normal = None
+            if anchor.local_normal is not None:
+                local_normal = np.asarray(anchor.local_normal, dtype=float)
+                unscaled = np.divide(local_normal, scale, out=np.zeros(3),
+                                     where=np.abs(scale) > 1e-12)
+                normal_value = rotation @ unscaled
+                length = float(np.linalg.norm(normal_value))
+                if length > 1e-12:
+                    normal = normal_value / length
+            records[(anchor.kind, anchor.anchor_id)] = (anchor, world, normal)
+        self._world_anchor_cache[id(obj)] = (obj, signature, records)
+        self.preview_stats["cache_rebuilds"] += 1
+        return records, signature
+
+    def _target_spatial_index(self, targets):
+        signatures = []
+        for target_index, target in targets:
+            _, signature = self._world_anchors(target)
+            signatures.append((id(target), signature))
+        key = tuple((index, id(target)) for index, target in targets), tuple(signatures)
+        if key == self._spatial_cache_key:
+            return self._spatial_cache
+
+        entries = []
+        for (target_index, target), (_, signature) in zip(targets, signatures):
+            records, _ = self._world_anchors(target)
+            has_endpoints = any(anchor_id.startswith("endpoint:")
+                                for (anchor_kind, anchor_id) in records
+                                if anchor_kind == "vertex")
+            for (kind, anchor_id), record in records.items():
+                if kind not in ("vertex", "edge", "face"):
+                    continue
+                if (kind == "vertex" and has_endpoints
+                        and not anchor_id.startswith("endpoint:")):
+                    continue
+                anchor, point, _ = record
+                if point.shape == (3,) and np.all(np.isfinite(point)):
+                    cell = tuple(np.floor(point / self.ANCHOR_PREVIEW_DISTANCE).astype(np.int64))
+                    entries.append((cell, kind, target_index, target, anchor, point))
+        grid = {}
+        for entry in entries:
+            grid.setdefault(entry[1], []).append(entry)
+        for kind, kind_entries in grid.items():
+            grid[kind] = (cKDTree(np.asarray([item[5] for item in kind_entries],
+                                             dtype=float)), kind_entries)
+        self._spatial_cache_key = key
+        self._spatial_cache = grid
+        self.preview_stats["spatial_rebuilds"] += 1
+        return self._spatial_cache
 
     @property
     def assemblies(self):
@@ -137,37 +256,79 @@ class Snapping:
             self.snap_preview = None
             return None
 
+        eligible_targets = [(i, obj) for i, obj in enumerate(all_objects or ())
+                            if not any(obj is member for member in excluded)]
+        grid = self._target_spatial_index(eligible_targets)
+        moving_records, moving_signature = self._world_anchors(moving_obj)
+        moving_has_endpoints = any(anchor_id.startswith("endpoint:")
+                                   for kind, anchor_id in moving_records
+                                   if kind == "vertex")
         best_key = None
         best_preview = None
-        for target_index, target in enumerate(all_objects or ()):
-            if any(target is member for member in excluded):
+        for kind in ("vertex", "edge", "face"):
+            indexed = grid.get(kind)
+            if indexed is None:
                 continue
-            target_anchors = tuple(getattr(target, "snap_anchors", ()) or ())
-            for moving_anchor in moving_anchors:
-                if moving_anchor.kind not in ("vertex", "edge", "face"):
+            tree, entries = indexed
+            if moving_has_endpoints and kind != "vertex":
+                continue
+            movers = [(anchor, moving_records[(kind, anchor.anchor_id)][1])
+                      for anchor in moving_anchors
+                      if anchor.kind == kind
+                      and (kind != "vertex" or not moving_has_endpoints
+                           or anchor.anchor_id.startswith("endpoint:"))
+                      and (kind, anchor.anchor_id) in moving_records
+                      and np.all(np.isfinite(moving_records[(kind, anchor.anchor_id)][1]))]
+            if not movers:
+                continue
+            target_kinds = (("vertex", "edge", "face") if moving_has_endpoints
+                            and kind == "vertex" else (kind,))
+            points = np.asarray([item[1] for item in movers], dtype=float)
+            for compatible_kind in target_kinds:
+                compatible = grid.get(compatible_kind)
+                if compatible is None:
                     continue
-                moving_position = np.asarray(moving_anchor.world_position(moving_obj), dtype=float)
-                if moving_position.shape != (3,) or not np.all(np.isfinite(moving_position)):
+                target_tree, target_entries = compatible
+                distances, indices = target_tree.query(
+                    points, k=1,
+                    distance_upper_bound=np.nextafter(self.ANCHOR_PREVIEW_DISTANCE, math.inf)
+                )
+                distances = np.asarray(distances).reshape(-1)
+                indices = np.asarray(indices).reshape(-1)
+                valid = np.isfinite(distances) & (indices < len(target_entries))
+                if not np.any(valid):
                     continue
-                for target_anchor in target_anchors:
-                    if target_anchor.kind != moving_anchor.kind:
-                        continue
-                    target_position = np.asarray(target_anchor.world_position(target), dtype=float)
-                    if target_position.shape != (3,) or not np.all(np.isfinite(target_position)):
-                        continue
-                    distance = float(np.linalg.norm(moving_position - target_position))
-                    if not math.isfinite(distance) or distance > self.ANCHOR_PREVIEW_DISTANCE:
-                        continue
-                    key = (distance, target_index, moving_anchor.anchor_id,
-                           target_anchor.anchor_id)
-                    if best_key is None or key < best_key:
-                        best_key = key
-                        best_preview = SnapPreview(
-                            moving_obj, target, moving_anchor.anchor_id,
-                            target_anchor.anchor_id, moving_anchor.kind,
-                            tuple(float(value) for value in moving_position),
-                            tuple(float(value) for value in target_position), distance,
-                        )
+                nearest = float(np.min(distances[valid]))
+                # Only moving anchors tied for the global best in this target
+                # kind can affect the deterministic winner.
+                for mover_index in np.flatnonzero(valid & (distances <= nearest + 1e-12)):
+                    moving_anchor, moving_position = movers[int(mover_index)]
+                    tied_indices = target_tree.query_ball_point(
+                        moving_position, float(distances[mover_index]) + 1e-12
+                    )
+                    for candidate_index in tied_indices:
+                        _, target_kind, target_index, target, target_anchor, target_position = target_entries[candidate_index]
+                        self.preview_stats["candidates_checked"] += 1
+                        distance = float(np.linalg.norm(moving_position - target_position))
+                        if not math.isfinite(distance) or distance > self.ANCHOR_PREVIEW_DISTANCE:
+                            continue
+                        moving_endpoint = moving_anchor.anchor_id.startswith("endpoint:")
+                        target_endpoint = target_anchor.anchor_id.startswith("endpoint:")
+                        endpoint_priority = (0 if moving_endpoint and target_endpoint
+                                             else 1 if moving_endpoint or target_endpoint
+                                             else 2)
+                        key = (endpoint_priority, distance, target_index, moving_anchor.anchor_id,
+                               target_anchor.anchor_id)
+                        if best_key is None or key < best_key:
+                            best_key = key
+                            _, target_signature = self._world_anchors(target)
+                            best_preview = SnapPreview(
+                                moving_obj, target, moving_anchor.anchor_id,
+                                target_anchor.anchor_id, moving_anchor.kind,
+                                tuple(float(value) for value in moving_position),
+                                tuple(float(value) for value in target_position), distance,
+                                moving_signature, target_signature, target_kind,
+                            )
         self.snap_preview = best_preview
         return best_preview
 
@@ -188,6 +349,13 @@ class Snapping:
                 or preview.target_object is moving_obj):
             return False
         target_obj = preview.target_object
+        if preview.moving_signature is not None:
+            _, current_moving_signature = self._world_anchors(moving_obj)
+            _, current_target_signature = self._world_anchors(target_obj)
+            if (current_moving_signature != preview.moving_signature
+                    or current_target_signature != preview.target_signature):
+                self.clear_preview()
+                return False
         if all_objects is not None and not any(target_obj is item for item in all_objects):
             return False
         group = self.get_group(moving_obj)
@@ -198,7 +366,7 @@ class Snapping:
             moving_obj, preview.moving_anchor_id, preview.kind
         )
         target_anchor = self._find_anchor(
-            target_obj, preview.target_anchor_id, preview.kind
+            target_obj, preview.target_anchor_id, preview.target_kind or preview.kind
         )
         if moving_anchor is None or target_anchor is None:
             return False
@@ -210,8 +378,10 @@ class Snapping:
         pivot_before = np.asarray(moving_obj.position, dtype=float).copy()
         rotation_delta = np.eye(3, dtype=float)
         if preview.kind == "face":
-            moving_normal = moving_anchor.world_normal(moving_obj)
-            target_normal = target_anchor.world_normal(target_obj)
+            moving_normal = self._world_anchors(moving_obj)[0][
+                (moving_anchor.kind, moving_anchor.anchor_id)][2]
+            target_normal = self._world_anchors(target_obj)[0][
+                (target_anchor.kind, target_anchor.anchor_id)][2]
             if moving_normal is not None and target_normal is not None:
                 rotation_delta = self._rotation_between(
                     np.asarray(moving_normal, dtype=float),
@@ -222,6 +392,15 @@ class Snapping:
             target_direction = self._edge_world_direction(target_obj, target_anchor)
             if moving_direction is not None and target_direction is not None:
                 rotation_delta = self._rotation_between(moving_direction, target_direction)
+        elif preview.kind == "vertex":
+            # For elongated meshes, orient the selected end toward the target
+            # before translating it onto the target surface point. This keeps
+            # rods/beams straight and prevents side-on or embedded connections.
+            alignment = self._longitudinal_connection_rotation(
+                moving_obj, moving_anchor, target_obj, target_anchor
+            )
+            if alignment is not None:
+                rotation_delta = alignment
 
         if not np.allclose(rotation_delta, np.eye(3), atol=1e-12):
             current_rotation = self._rotation_matrix(moving_obj.rotation)
@@ -229,8 +408,10 @@ class Snapping:
 
         # Recompute after rotation so translation places the active anchor
         # exactly at the target's current transformed anchor position.
-        moving_position = np.asarray(moving_anchor.world_position(moving_obj), dtype=float)
-        target_position = np.asarray(target_anchor.world_position(target_obj), dtype=float)
+        moving_position = self._world_anchors(moving_obj)[0][
+            (moving_anchor.kind, moving_anchor.anchor_id)][1].copy()
+        target_position = self._world_anchors(target_obj)[0][
+            (target_anchor.kind, target_anchor.anchor_id)][1].copy()
         if (not np.all(np.isfinite(moving_position))
                 or not np.all(np.isfinite(target_position))):
             return False
@@ -304,6 +485,68 @@ class Snapping:
         direction = endpoints[1] - endpoints[0]
         length = float(np.linalg.norm(direction))
         return direction / length if length > 1e-12 else None
+
+    def _longitudinal_connection_rotation(self, moving_obj, moving_anchor,
+                                          target_obj, target_anchor):
+        """Aim an elongated object's selected end toward a vertex connection.
+
+        The dominant local mesh axis is used, so the rule applies to rods,
+        beams, and other genuinely elongated candidates without depending on
+        their candidate IDs or assumed local axis. Compact objects are left
+        unchanged. Only rotation is computed here; scale and vertices remain
+        untouched and the active anchor is translated onto the target later.
+        """
+        try:
+            vertices = np.asarray(moving_obj.vertices, dtype=float).reshape((-1, 3))
+        except (AttributeError, TypeError, ValueError):
+            return None
+        if len(vertices) < 3 or not np.all(np.isfinite(vertices)):
+            return None
+        center = np.mean(vertices, axis=0)
+        centered = vertices - center
+        covariance = centered.T @ centered / len(centered)
+        eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+        axis = eigenvectors[:, int(np.argmax(eigenvalues))]
+        ordered_values = np.sort(np.maximum(eigenvalues, 0.0))
+        transverse = float(ordered_values[-2]) if len(ordered_values) > 1 else 0.0
+        semantic_endpoint = moving_anchor.anchor_id.startswith("endpoint:")
+        if (transverse <= 1e-12
+                or (not semantic_endpoint
+                    and math.sqrt(float(ordered_values[-1]) / transverse) < 2.0)):
+            return None
+        projected = centered @ axis
+        longitudinal = float(np.max(projected) - np.min(projected))
+        residual = centered - np.outer(projected, axis)
+        radial = float(np.max(np.linalg.norm(residual, axis=1)))
+        if longitudinal <= 1e-9 or radial <= 1e-9 or longitudinal / radial < 2.0:
+            return None
+
+        scale = np.asarray(moving_obj.scale, dtype=float).reshape(3)
+        rotation = self._rotation_matrix(moving_obj.rotation)
+        world_axis = rotation @ (axis * scale)
+        world_axis_length = float(np.linalg.norm(world_axis))
+        if world_axis_length <= 1e-12:
+            return None
+        world_axis /= world_axis_length
+
+        anchor_side = float(np.dot(
+            np.asarray(moving_anchor.local_position, dtype=float) - center, axis
+        ))
+        if abs(anchor_side) <= 1e-9:
+            return None
+        source_direction = world_axis * (1.0 if anchor_side > 0 else -1.0)
+
+        object_position = np.asarray(moving_obj.position, dtype=float).reshape(3)
+        center_world = rotation @ (center * scale) + object_position
+        target_record = self._world_anchors(target_obj)[0].get(
+            (target_anchor.kind, target_anchor.anchor_id)
+        )
+        if target_record is None:
+            return None
+        desired_direction = target_record[1] - center_world
+        if float(np.linalg.norm(desired_direction)) <= 1e-9:
+            return None
+        return self._rotation_between(source_direction, desired_direction)
 
     @staticmethod
     def _rotation_between(source, target):
@@ -458,19 +701,34 @@ class Snapping:
 
     def detach(self, obj):
         """
-        Pull obj out of its SnapGroup (called on fast peace-sign yank).
-        If the group shrinks to 1, dissolve it entirely.
+        Legacy gesture entry point. Keep its Enable Snapping gate for the
+        existing peace-sign interaction, then delegate to the public API.
         """
         if not self.enabled:
-            return
-        group = self.get_group(obj)
+            return False
+        return self.detach_object(obj)
+
+    def detach_object(self, obj_or_id):
+        """Detach one assembly member without changing its world transform.
+
+        Accepts the object reference or its Python ``id(obj)``. Returns True
+        only when an assembly membership was actually removed. Explicit API
+        calls are independent of the snapping toggle; that toggle controls
+        new snapping, not management of an existing assembly.
+        """
+        obj = obj_or_id
+        if isinstance(obj_or_id, int):
+            obj = next((member for group in self._groups
+                        for member in group.members
+                        if id(member) == obj_or_id), None)
+        group = self.get_group(obj) if obj is not None else None
         if group is None:
-            return
+            return False
 
         group.remove(obj)
-
         if len(group) <= 1:
             self._groups = [g for g in self._groups if g is not group]
+        return True
 
     def get_group(self, obj):
         """Return the SnapGroup obj belongs to, or None."""
@@ -530,7 +788,7 @@ class Snapping:
             state["position"][:] = obj.position
 
     def propagate_rotate(self, obj, delta_rx, delta_ry):
-        """Rotate every member around the manipulated object's current pivot."""
+        """Rotate an assembly from a stable anchor-relative transform."""
         group = self.get_group(obj)
         if group is None:
             return
@@ -546,6 +804,33 @@ class Snapping:
         rotation_delta = new_rotation @ old_rotation.T
         old_pivot = previous["position"]
         new_pivot = np.asarray(obj.position, dtype=float)
+        if obj is group.anchor:
+            # Rebuild members from their snap-time local transforms instead
+            # of incrementally rotating the last frame's floating-point state.
+            anchor_scale = np.asarray(obj.scale, dtype=float)
+            for member in group.members:
+                if member is obj:
+                    continue
+                relative = group._relative_transforms.get(id(member))
+                if relative is None:
+                    continue
+                self._write_position(
+                    member,
+                    new_pivot + new_rotation @ (relative["position"] * anchor_scale),
+                )
+                self._write_rotation(
+                    member, new_rotation @ relative["rotation"]
+                )
+                try:
+                    member.scale[:] = relative["scale"] * anchor_scale
+                except (TypeError, AttributeError):
+                    member.scale = relative["scale"] * anchor_scale
+                state = group._last_states[id(member)]
+                state.update(group._state(member))
+            previous["position"][:] = obj.position
+            previous["rotation"][:] = obj.rotation
+            previous["rotation_matrix"][:] = new_rotation
+            return
         for member in group.members:
             if member is obj:
                 continue

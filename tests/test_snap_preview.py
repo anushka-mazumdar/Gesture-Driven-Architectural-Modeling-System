@@ -1,5 +1,6 @@
 import unittest
 from types import SimpleNamespace
+from pathlib import Path
 
 import numpy as np
 
@@ -83,6 +84,60 @@ class SnapPreviewTests(unittest.TestCase):
                     for _ in range(3)]
         self.assertTrue(all(item.target_object is second for item in previews))
         self.assertEqual([item.target_anchor_id for item in previews], ["a-anchor"] * 3)
+
+    def test_world_anchor_cache_hits_and_invalidates_for_transform_and_geometry(self):
+        target = mesh([("v", "vertex", (2, 0, 0))])
+        snapping = Snapping(enabled=True)
+        first = snapping._world_anchors(target)[0][("vertex", "v")][1].copy()
+        snapping._world_anchors(target)
+        self.assertEqual(snapping.preview_stats["cache_rebuilds"], 1)
+        self.assertEqual(snapping.preview_stats["cache_hits"], 1)
+        target.position[0] = 10
+        second = snapping._world_anchors(target)[0][("vertex", "v")][1]
+        np.testing.assert_allclose(second - first, (10, 0, 0))
+        target.snap_anchors = (SnapAnchor("v", "vertex", (5, 0, 0)),)
+        third = snapping._world_anchors(target)[0][("vertex", "v")][1]
+        np.testing.assert_allclose(third, (15, 0, 0))
+        self.assertEqual(snapping.preview_stats["cache_rebuilds"], 3)
+
+    def test_preview_commit_rejects_stale_transform_result(self):
+        target = mesh([("target", "vertex", (10, 0, 0))])
+        snapping = Snapping(enabled=True)
+        preview = snapping.preview_nearest_anchors(self.moving, [self.moving, target])
+        self.assertIsNotNone(preview)
+        target.position[0] = 11
+        before = self.moving.position.copy()
+        self.assertFalse(snapping.commit_preview(self.moving, [self.moving, target]))
+        np.testing.assert_array_equal(self.moving.position, before)
+        self.assertIsNone(snapping.snap_preview)
+
+    def test_spatial_index_limits_candidates_and_preserves_nearest_result(self):
+        moving = mesh([("m", "vertex", (0, 0, 0))])
+        target = mesh([("far", "vertex", (500, 0, 0)),
+                       ("near", "vertex", (2, 0, 0))])
+        # Add many anchors outside the neighboring cells to exercise pruning.
+        target.snap_anchors += tuple(SnapAnchor(f"d{i}", "vertex", (1000+i*50, 0, 0))
+                                     for i in range(100))
+        snapping = Snapping(enabled=True)
+        preview = snapping.preview_nearest_anchors(moving, [moving, target])
+        self.assertEqual(preview.target_anchor_id, "near")
+        self.assertLess(snapping.preview_stats["candidates_checked"], 5)
+
+    def test_webview_preview_reuses_marker_and_connector_geometry(self):
+        source = (Path(__file__).resolve().parents[1]
+                  / "webview_app" / "web" / "main.js").read_text(encoding="utf-8")
+        marker_setup = source.split("for (const [radius, halo]", 1)[1].split(
+            "const snapPreviewPositions", 1
+        )[0]
+        self.assertIn("marker.visible = false", marker_setup)
+        self.assertIn("snapPreviewGroup.add(snapPreviewConnector)", source)
+        handler = source.split("window.receiveSnapPreviewFromPython = function (preview) {", 1)[1].split(
+            "};", 1
+        )[0]
+        self.assertNotIn("new THREE.SphereGeometry", handler)
+        self.assertNotIn("new THREE.BufferGeometry", handler)
+        self.assertIn("snapPreviewPositions.set(values)", handler)
+        self.assertIn("snapPreviewGeometry.attributes.position.needsUpdate = true", handler)
 
     def test_renderer_preview_creation_and_removal_are_separate_from_meshes(self):
         class Window:
